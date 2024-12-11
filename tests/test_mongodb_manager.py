@@ -114,5 +114,95 @@ class TestMongoDBManager(unittest.TestCase):
         retrieved_data = self.mongodb_manager.get_latest_market_data(symbol)
         self.assertIsNone(retrieved_data)
 
+    def test_store_and_retrieve_api_metrics(self):
+        """Teste le stockage et la récupération des métriques de l'API"""
+        # Données de test
+        endpoint = "/v5/market/tickers"
+        metric_type = "latency"
+        value = 150.5  # milliseconds
+        
+        # Stockage des métriques
+        self.mongodb_manager.store_api_metrics(endpoint, metric_type, value)
+        
+        # Récupération des métriques
+        start_time = datetime.now() - timedelta(minutes=5)
+        end_time = datetime.now() + timedelta(minutes=5)
+        metrics = self.mongodb_manager.get_api_metrics(endpoint, metric_type, start_time, end_time)
+        
+        # Vérifications
+        self.assertGreater(len(metrics), 0)
+        retrieved_metric = metrics[0]
+        self.assertEqual(retrieved_metric["endpoint"], endpoint)
+        self.assertEqual(retrieved_metric["metric_type"], metric_type)
+        self.assertEqual(retrieved_metric["value"], value)
+
+    def test_store_and_retrieve_monitoring_events(self):
+        """Teste le stockage et la récupération des événements de monitoring"""
+        # Données de test
+        endpoint = "/v5/market/orderbook"
+        event_type = "error"
+        details = {
+            "error_code": "429",
+            "message": "Rate limit exceeded",
+            "retry_after": 60
+        }
+        
+        # Stockage de l'événement
+        self.mongodb_manager.store_monitoring_event(endpoint, event_type, details)
+        
+        # Récupération des événements avec différents filtres
+        # Test 1: Récupération par endpoint
+        events = self.mongodb_manager.get_monitoring_events(endpoint=endpoint)
+        self.assertGreater(len(events), 0)
+        self.assertEqual(events[0]["endpoint"], endpoint)
+        self.assertEqual(events[0]["event_type"], event_type)
+        self.assertEqual(events[0]["details"], details)
+        
+        # Test 2: Récupération par type d'événement
+        events = self.mongodb_manager.get_monitoring_events(event_type=event_type)
+        self.assertGreater(len(events), 0)
+        self.assertEqual(events[0]["event_type"], event_type)
+        
+        # Test 3: Récupération avec période temporelle
+        start_time = datetime.now() - timedelta(minutes=5)
+        end_time = datetime.now() + timedelta(minutes=5)
+        events = self.mongodb_manager.get_monitoring_events(
+            endpoint=endpoint,
+            start_time=start_time,
+            end_time=end_time
+        )
+        self.assertGreater(len(events), 0)
+
+    def test_cleanup_monitoring_data(self):
+        """Teste le nettoyage des anciennes données de monitoring"""
+        # Stockage de données de monitoring anciennes
+        endpoint = "/v5/market/tickers"
+        
+        # Métriques API
+        self.mongodb_manager.store_api_metrics(endpoint, "latency", 100.0)
+        
+        # Événement de monitoring
+        self.mongodb_manager.store_monitoring_event(endpoint, "info", {"status": "ok"})
+        
+        # Attente d'une seconde pour s'assurer que les données sont stockées
+        time.sleep(1)
+        
+        # Nettoyage des données (en gardant seulement les dernières 0.1 jours)
+        self.mongodb_manager.cleanup_old_data(days_to_keep=0.1)
+        
+        # Vérification que les données sont toujours présentes
+        start_time = datetime.now() - timedelta(days=0.05)
+        end_time = datetime.now()
+        
+        metrics = self.mongodb_manager.get_api_metrics(endpoint, "latency", start_time, end_time)
+        self.assertGreater(len(metrics), 0)
+        
+        events = self.mongodb_manager.get_monitoring_events(
+            endpoint=endpoint,
+            start_time=start_time,
+            end_time=end_time
+        )
+        self.assertGreater(len(events), 0)
+
 if __name__ == '__main__':
     unittest.main()

@@ -25,6 +25,8 @@ class MongoDBManager:
         market_data_collection = os.getenv('MONGODB_COLLECTION_MARKET_DATA', 'market_data')
         indicators_collection = os.getenv('MONGODB_COLLECTION_INDICATORS', 'indicators')
         trades_collection = os.getenv('MONGODB_COLLECTION_TRADES', 'trades')
+        monitoring_collection = os.getenv('MONGODB_COLLECTION_MONITORING', 'monitoring')
+        api_metrics_collection = os.getenv('MONGODB_COLLECTION_API_METRICS', 'api_metrics')
         
         # Construction de l'URI MongoDB avec les identifiants
         mongodb_uri = f"mongodb://{mongodb_user}:{mongodb_password}@localhost:27017/"
@@ -56,6 +58,8 @@ class MongoDBManager:
         self.trades: Collection = self.db[trades_collection]
         self.backtest_results: Collection = self.db['backtest_results']
         self.strategy_config: Collection = self.db['strategy_config']
+        self.monitoring: Collection = self.db[monitoring_collection]
+        self.api_metrics: Collection = self.db[api_metrics_collection]
         
         # Création des index
         self._setup_indexes()
@@ -80,6 +84,14 @@ class MongoDBManager:
         
         # Index pour strategy_config
         self.strategy_config.create_index([("strategy_name", ASCENDING)])
+        
+        # Index pour monitoring
+        self.monitoring.create_index([("timestamp", DESCENDING)])
+        self.monitoring.create_index([("endpoint", ASCENDING), ("timestamp", DESCENDING)])
+        
+        # Index pour api_metrics
+        self.api_metrics.create_index([("timestamp", DESCENDING)])
+        self.api_metrics.create_index([("endpoint", ASCENDING), ("metric_type", ASCENDING), ("timestamp", DESCENDING)])
 
     def store_market_data(self, symbol: str, data: Dict[str, Any]):
         """
@@ -223,6 +235,46 @@ class MongoDBManager:
             self.logger.error(f"Error storing indicators in bulk: {str(e)}")
             raise
 
+    def store_api_metrics(self, endpoint: str, metric_type: str, value: float):
+        """
+        Stocke les métriques de l'API Bybit
+        :param endpoint: Endpoint de l'API
+        :param metric_type: Type de métrique (latency, availability, rate_limit)
+        :param value: Valeur de la métrique
+        """
+        try:
+            document = {
+                "endpoint": endpoint,
+                "metric_type": metric_type,
+                "value": value,
+                "timestamp": datetime.now()
+            }
+            self.api_metrics.insert_one(document)
+            self.logger.debug(f"Stored API metric for {endpoint}: {metric_type}")
+        except Exception as e:
+            self.logger.error(f"Error storing API metric: {str(e)}")
+            raise
+
+    def store_monitoring_event(self, endpoint: str, event_type: str, details: Dict[str, Any]):
+        """
+        Stocke les événements de monitoring
+        :param endpoint: Endpoint concerné
+        :param event_type: Type d'événement (error, warning, info)
+        :param details: Détails de l'événement
+        """
+        try:
+            document = {
+                "endpoint": endpoint,
+                "event_type": event_type,
+                "details": details,
+                "timestamp": datetime.now()
+            }
+            self.monitoring.insert_one(document)
+            self.logger.debug(f"Stored monitoring event for {endpoint}")
+        except Exception as e:
+            self.logger.error(f"Error storing monitoring event: {str(e)}")
+            raise
+
     def get_latest_market_data(self, symbol: str) -> Optional[Dict[str, Any]]:
         """
         Récupère les dernières données de marché pour un symbole
@@ -314,6 +366,58 @@ class MongoDBManager:
             self.logger.error(f"Error retrieving strategy config: {str(e)}")
             return None
 
+    def get_api_metrics(self, endpoint: str, metric_type: str, 
+                       start_time: datetime, end_time: datetime) -> List[Dict[str, Any]]:
+        """
+        Récupère les métriques de l'API pour une période donnée
+        :param endpoint: Endpoint de l'API
+        :param metric_type: Type de métrique
+        :param start_time: Début de la période
+        :param end_time: Fin de la période
+        :return: Liste des métriques
+        """
+        try:
+            query = {
+                "endpoint": endpoint,
+                "metric_type": metric_type,
+                "timestamp": {
+                    "$gte": start_time,
+                    "$lte": end_time
+                }
+            }
+            return list(self.api_metrics.find(query).sort("timestamp", DESCENDING))
+        except Exception as e:
+            self.logger.error(f"Error retrieving API metrics: {str(e)}")
+            raise
+
+    def get_monitoring_events(self, endpoint: Optional[str] = None,
+                            event_type: Optional[str] = None,
+                            start_time: Optional[datetime] = None,
+                            end_time: Optional[datetime] = None) -> List[Dict[str, Any]]:
+        """
+        Récupère les événements de monitoring
+        :param endpoint: Filtrer par endpoint (optionnel)
+        :param event_type: Filtrer par type d'événement (optionnel)
+        :param start_time: Début de la période (optionnel)
+        :param end_time: Fin de la période (optionnel)
+        :return: Liste des événements
+        """
+        try:
+            query = {}
+            if endpoint:
+                query["endpoint"] = endpoint
+            if event_type:
+                query["event_type"] = event_type
+            if start_time and end_time:
+                query["timestamp"] = {
+                    "$gte": start_time,
+                    "$lte": end_time
+                }
+            return list(self.monitoring.find(query).sort("timestamp", DESCENDING))
+        except Exception as e:
+            self.logger.error(f"Error retrieving monitoring events: {str(e)}")
+            raise
+
     def cleanup_old_data(self, days_to_keep: int = 30):
         """
         Nettoie les anciennes données
@@ -337,6 +441,14 @@ class MongoDBManager:
             # Nettoyer les résultats des backtests
             result = self.backtest_results.delete_many({"timestamp": {"$lt": cutoff_date}})
             self.logger.info(f"Deleted {result.deleted_count} old backtest results documents")
+            
+            # Nettoyer les métriques de l'API
+            result = self.api_metrics.delete_many({"timestamp": {"$lt": cutoff_date}})
+            self.logger.info(f"Deleted {result.deleted_count} old API metrics documents")
+            
+            # Nettoyer les événements de monitoring
+            result = self.monitoring.delete_many({"timestamp": {"$lt": cutoff_date}})
+            self.logger.info(f"Deleted {result.deleted_count} old monitoring events documents")
             
             # Force un délai pour s'assurer que les suppressions sont effectuées
             time.sleep(0.5)
