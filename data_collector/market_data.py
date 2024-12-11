@@ -7,6 +7,7 @@ import time
 from typing import List, Dict, Any
 import os
 from dotenv import load_dotenv
+from .technical_indicators import TechnicalAnalysis
 
 class MarketDataCollector:
     def __init__(self, api_key: str, api_secret: str):
@@ -19,6 +20,8 @@ class MarketDataCollector:
         
         if use_testnet:
             self.logger.info("Using Binance Testnet")
+            
+        self.technical_analyzer = TechnicalAnalysis()
 
     def _setup_logging(self):
         logging.basicConfig(
@@ -64,4 +67,56 @@ class MarketDataCollector:
             return depth
         except BinanceAPIException as e:
             self.logger.error(f"Error fetching order book for {symbol}: {str(e)}")
+            raise
+
+    def get_technical_analysis(self, symbol: str, interval: str = '1h', limit: int = 100) -> Dict[str, Any]:
+        """
+        Récupère les données et effectue une analyse technique complète
+        :param symbol: Symbole de la paire de trading (ex: 'BTCUSDT')
+        :param interval: Intervalle de temps pour les bougies (ex: '1h', '4h', '1d')
+        :param limit: Nombre de bougies à récupérer
+        :return: Dictionnaire contenant les indicateurs et signaux
+        """
+        try:
+            # Récupérer les données historiques
+            df = self.get_klines(symbol, interval, limit)
+            
+            # Calculer les indicateurs techniques
+            indicators = self.technical_analyzer.calculate_all(df)
+            
+            # Obtenir les signaux de trading
+            signals = self.technical_analyzer.get_signals(df)
+            
+            # Obtenir le résumé de l'analyse
+            summary = self.technical_analyzer.get_summary(df)
+            
+            return {
+                'indicators': indicators,
+                'signals': signals,
+                'summary': summary,
+                'last_update': datetime.now().isoformat()
+            }
+        except Exception as e:
+            self.logger.error(f"Error performing technical analysis for {symbol}: {str(e)}")
+            raise
+
+    def get_market_analysis(self, symbol: str) -> Dict[str, Any]:
+        """
+        Fournit une analyse complète du marché incluant prix actuel, analyse technique et carnet d'ordres
+        :param symbol: Symbole de la paire de trading (ex: 'BTCUSDT')
+        :return: Dictionnaire contenant toutes les informations d'analyse
+        """
+        try:
+            current_price = self.get_current_price(symbol)
+            technical_analysis = self.get_technical_analysis(symbol)
+            order_book = self.get_order_book(symbol)
+            
+            return {
+                'current_price': current_price,
+                'technical_analysis': technical_analysis,
+                'order_book': order_book,
+                'timestamp': datetime.now().isoformat()
+            }
+        except Exception as e:
+            self.logger.error(f"Error performing market analysis for {symbol}: {str(e)}")
             raise

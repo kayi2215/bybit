@@ -1,0 +1,3 @@
+Mettre en place un système de monitoring pour surveiller la disponibilité et la performance des APIs utilisées, afin de détecter rapidement tout problème potentiel.
+Stocker les données collectées dans une base de données locale ou dans le cloud pour un accès rapide et fiable par les autres modules du système de trading.
+Implémenter un mécanisme de mise à jour régulière des données pour s'assurer de toujours travailler avec les informations de marché les plus récentes.
