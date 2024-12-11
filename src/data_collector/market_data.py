@@ -1,6 +1,5 @@
 import logging
-from binance.client import Client
-from binance.exceptions import BinanceAPIException
+from pybit.unified_trading import HTTP
 import pandas as pd
 from datetime import datetime
 import time
@@ -9,17 +8,34 @@ import os
 from dotenv import load_dotenv
 from .technical_indicators import TechnicalAnalysis
 
+def interval_to_milliseconds(interval: str) -> int:
+    """Convert interval string to milliseconds"""
+    if interval.endswith('m'):
+        return int(interval[:-1]) * 60 * 1000
+    elif interval.endswith('h'):
+        return int(interval[:-1]) * 60 * 60 * 1000
+    elif interval == 'D':
+        return 24 * 60 * 60 * 1000
+    elif interval == 'W':
+        return 7 * 24 * 60 * 60 * 1000
+    return 0
+
 class MarketDataCollector:
     def __init__(self, api_key: str, api_secret: str):
         load_dotenv()
         use_testnet = os.getenv('USE_TESTNET', 'False').lower() == 'true'
         
-        self.client = Client(api_key, api_secret, testnet=use_testnet)
+        # Initialize Bybit client
+        self.client = HTTP(
+            testnet=use_testnet,
+            api_key=api_key,
+            api_secret=api_secret
+        )
         self.logger = logging.getLogger(__name__)
         self._setup_logging()
         
         if use_testnet:
-            self.logger.info("Using Binance Testnet")
+            self.logger.info("Using Bybit Testnet")
             
         self.technical_analyzer = TechnicalAnalysis()
 
@@ -31,25 +47,59 @@ class MarketDataCollector:
 
     def get_current_price(self, symbol: str) -> Dict[str, float]:
         try:
-            ticker = self.client.get_symbol_ticker(symbol=symbol)
-            self.logger.info(f"Retrieved price for {symbol}: {ticker['price']}")
+            ticker = self.client.get_tickers(
+                category="spot",
+                symbol=symbol
+            )
+            price = float(ticker['result']['list'][0]['lastPrice'])
+            self.logger.info(f"Retrieved price for {symbol}: {price}")
             return {
                 'symbol': symbol,
-                'price': float(ticker['price']),
+                'price': price,
                 'timestamp': datetime.now().timestamp()
             }
-        except BinanceAPIException as e:
+        except Exception as e:
             self.logger.error(f"Error fetching price for {symbol}: {str(e)}")
             raise
 
     def get_klines(self, symbol: str, interval: str, limit: int = 100) -> pd.DataFrame:
         try:
-            klines = self.client.get_klines(
+            # Convert interval to Bybit format
+            interval_map = {
+                '1m': '1', '3m': '3', '5m': '5', '15m': '15',
+                '30m': '30', '1h': '60', '2h': '120', '4h': '240',
+                '6h': '360', '12h': '720', '1d': 'D', '1w': 'W'
+            }
+            bybit_interval = interval_map.get(interval, '60')
+            
+            klines = self.client.get_kline(
+                category="spot",
                 symbol=symbol,
-                interval=interval,
+                interval=bybit_interval,
                 limit=limit
             )
-            df = pd.DataFrame(klines, columns=[
+            
+            # Transform to match Binance format
+            formatted_klines = []
+            for kline in klines['result']['list']:
+                timestamp = int(kline[0])
+                formatted_kline = [
+                    timestamp,                    # timestamp
+                    float(kline[1]),             # open
+                    float(kline[2]),             # high
+                    float(kline[3]),             # low
+                    float(kline[4]),             # close
+                    float(kline[5]),             # volume
+                    timestamp + interval_to_milliseconds(bybit_interval),  # close_time
+                    float(kline[6]),             # quote_asset_volume (turnover)
+                    int(kline[7]) if len(kline) > 7 else 0,  # number_of_trades
+                    0.0,                         # taker_buy_base_asset_volume
+                    0.0,                         # taker_buy_quote_asset_volume
+                    0                            # ignore
+                ]
+                formatted_klines.append(formatted_kline)
+            
+            df = pd.DataFrame(formatted_klines, columns=[
                 'timestamp', 'open', 'high', 'low', 'close',
                 'volume', 'close_time', 'quote_asset_volume',
                 'number_of_trades', 'taker_buy_base_asset_volume',
@@ -57,70 +107,70 @@ class MarketDataCollector:
             ])
             df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
             return df
-        except BinanceAPIException as e:
+        except Exception as e:
             self.logger.error(f"Error fetching klines for {symbol}: {str(e)}")
             raise
 
     def get_order_book(self, symbol: str, limit: int = 100) -> Dict[str, Any]:
         try:
-            depth = self.client.get_order_book(symbol=symbol, limit=limit)
-            return depth
-        except BinanceAPIException as e:
+            depth = self.client.get_orderbook(
+                category="spot",
+                symbol=symbol,
+                limit=limit
+            )
+            # Transform to match Binance format
+            return {
+                'lastUpdateId': depth['result']['u'],  # Update ID
+                'bids': [[float(item[0]), float(item[1])] for item in depth['result']['b']],  # Bids
+                'asks': [[float(item[0]), float(item[1])] for item in depth['result']['a']]   # Asks
+            }
+        except Exception as e:
             self.logger.error(f"Error fetching order book for {symbol}: {str(e)}")
             raise
 
     def get_recent_trades(self, symbol: str, limit: int = 100) -> List[Dict[str, Any]]:
-        """
-        Récupère les transactions récentes pour un symbole
-        :param symbol: Symbole de la paire de trading (ex: 'BTCUSDT')
-        :param limit: Nombre de transactions à récupérer
-        :return: Liste des transactions récentes
-        """
         try:
-            trades = self.client.get_recent_trades(symbol=symbol, limit=limit)
-            self.logger.info(f"Retrieved {len(trades)} recent trades for {symbol}")
-            return trades
-        except BinanceAPIException as e:
+            trades = self.client.get_public_trade_history(
+                category="spot",
+                symbol=symbol,
+                limit=limit
+            )
+            # Transform to match Binance format
+            formatted_trades = []
+            for trade in trades['result']['list']:
+                formatted_trade = {
+                    'id': int(str(trade['execId']).replace('.', '')),  # Convertir en int après avoir retiré le point
+                    'price': float(trade['price']),
+                    'qty': float(trade['size']),
+                    'time': int(trade['time']),
+                    'isBuyerMaker': trade['side'].lower() == 'sell',
+                    'isBestMatch': True
+                }
+                formatted_trades.append(formatted_trade)
+            
+            self.logger.info(f"Retrieved {len(formatted_trades)} recent trades for {symbol}")
+            return formatted_trades
+        except Exception as e:
             self.logger.error(f"Error fetching recent trades for {symbol}: {str(e)}")
             raise
 
     def get_technical_analysis(self, symbol: str, interval: str = '1h', limit: int = 100) -> Dict[str, Any]:
-        """
-        Récupère les données et effectue une analyse technique complète
-        :param symbol: Symbole de la paire de trading (ex: 'BTCUSDT')
-        :param interval: Intervalle de temps pour les bougies (ex: '1h', '4h', '1d')
-        :param limit: Nombre de bougies à récupérer
-        :return: Dictionnaire contenant les indicateurs et signaux
-        """
         try:
-            # Récupérer les données historiques
             df = self.get_klines(symbol, interval, limit)
-            
-            # Calculer les indicateurs techniques
             indicators = self.technical_analyzer.calculate_all(df)
-            
-            # Obtenir les signaux de trading
             signals = self.technical_analyzer.get_signals(df)
-            
-            # Obtenir le résumé de l'analyse
             summary = self.technical_analyzer.get_summary(df)
             
             return {
                 'indicators': indicators,
                 'signals': signals,
-                'summary': summary,
-                'last_update': datetime.now().isoformat()
+                'summary': summary
             }
         except Exception as e:
             self.logger.error(f"Error performing technical analysis for {symbol}: {str(e)}")
             raise
 
     def get_market_analysis(self, symbol: str) -> Dict[str, Any]:
-        """
-        Fournit une analyse complète du marché incluant prix actuel, analyse technique et carnet d'ordres
-        :param symbol: Symbole de la paire de trading (ex: 'BTCUSDT')
-        :return: Dictionnaire contenant toutes les informations d'analyse
-        """
         try:
             current_price = self.get_current_price(symbol)
             technical_analysis = self.get_technical_analysis(symbol)
@@ -129,8 +179,7 @@ class MarketDataCollector:
             return {
                 'current_price': current_price,
                 'technical_analysis': technical_analysis,
-                'order_book': order_book,
-                'timestamp': datetime.now().isoformat()
+                'order_book': order_book
             }
         except Exception as e:
             self.logger.error(f"Error performing market analysis for {symbol}: {str(e)}")

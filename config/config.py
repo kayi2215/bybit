@@ -6,6 +6,8 @@ load_dotenv()
 # Configuration des APIs
 BINANCE_API_KEY = os.getenv('BINANCE_API_KEY')
 BINANCE_API_SECRET = os.getenv('BINANCE_API_SECRET')
+BYBIT_API_KEY = os.getenv('BYBIT_API_KEY')
+BYBIT_API_SECRET = os.getenv('BYBIT_API_SECRET')
 
 # Paires de trading à surveiller
 TRADING_PAIRS = ['BTCUSDT', 'ETHUSDT']
