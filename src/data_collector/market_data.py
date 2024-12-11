@@ -21,9 +21,16 @@ def interval_to_milliseconds(interval: str) -> int:
     return 0
 
 class MarketDataCollector:
-    def __init__(self, api_key: str, api_secret: str):
+    def __init__(self, api_key: str, api_secret: str, use_testnet: bool = False):
+        """
+        Initialise le collecteur de données de marché
+        
+        Args:
+            api_key: Clé API Bybit
+            api_secret: Secret API Bybit
+            use_testnet: Si True, utilise le testnet Bybit
+        """
         load_dotenv()
-        use_testnet = os.getenv('USE_TESTNET', 'False').lower() == 'true'
         
         # Initialize Bybit client
         self.client = HTTP(

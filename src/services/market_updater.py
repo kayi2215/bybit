@@ -3,18 +3,20 @@ import logging
 from datetime import datetime
 from threading import Thread
 from typing import List, Dict, Any
+import os
+from dotenv import load_dotenv
 
 from src.database.mongodb_manager import MongoDBManager
 from src.data_collector.market_data import MarketDataCollector
 from src.monitoring.api_monitor import APIMonitor
-from config.config import BINANCE_API_KEY, BINANCE_API_SECRET
 
 class MarketDataUpdater:
     def __init__(
         self,
         symbols: List[str],
         update_interval: int = 60,  # Par défaut, mise à jour toutes les 60 secondes
-        max_retries: int = 3
+        max_retries: int = 3,
+        use_testnet: bool = False
     ):
         """
         Initialise le service de mise à jour des données de marché
@@ -23,16 +25,28 @@ class MarketDataUpdater:
             symbols: Liste des paires de trading à surveiller
             update_interval: Intervalle de mise à jour en secondes
             max_retries: Nombre maximum de tentatives en cas d'échec
+            use_testnet: Utiliser le testnet Bybit au lieu du mainnet
         """
+        load_dotenv()
+        
         self.symbols = symbols
         self.update_interval = update_interval
         self.max_retries = max_retries
+        self.use_testnet = use_testnet
+        
+        # Récupération des clés API depuis les variables d'environnement
+        self.api_key = os.getenv('BYBIT_API_KEY')
+        self.api_secret = os.getenv('BYBIT_API_SECRET')
+        
+        if not self.api_key or not self.api_secret:
+            raise ValueError("Les clés API Bybit sont requises")
         
         # Initialisation des composants
         self.db = MongoDBManager()
         self.data_collector = MarketDataCollector(
-            api_key=BINANCE_API_KEY,
-            api_secret=BINANCE_API_SECRET
+            api_key=self.api_key,
+            api_secret=self.api_secret,
+            use_testnet=self.use_testnet
         )
         self.api_monitor = APIMonitor()
         
@@ -67,9 +81,9 @@ class MarketDataUpdater:
         while self.is_running:
             try:
                 # Vérifie d'abord la disponibilité de l'API
-                api_endpoint = "https://api.binance.com/api/v3/ping"  # Endpoint de test Binance
+                api_endpoint = "/v5/market/tickers"
                 if not self.api_monitor.check_api_health(api_endpoint):
-                    self.logger.error("API is not healthy, skipping update")
+                    self.logger.error("API Bybit is not healthy, skipping update")
                     time.sleep(self.update_interval)
                     continue
 
@@ -123,7 +137,7 @@ class MarketDataUpdater:
 
     def _collect_market_data(self, symbol: str) -> Dict[str, Any]:
         """
-        Collecte les données de marché pour un symbole
+        Collecte les données de marché pour un symbole via l'API Bybit
         
         Args:
             symbol: Symbole de la paire de trading
@@ -132,8 +146,8 @@ class MarketDataUpdater:
             Dict contenant les données de marché
         """
         try:
-            # Récupération du prix actuel
-            current_price = self.data_collector.get_current_price(symbol)
+            # Récupération du ticker (prix actuel et autres informations)
+            ticker = self.data_collector.get_ticker(symbol)
             
             # Récupération du carnet d'ordres
             order_book = self.data_collector.get_order_book(symbol)
@@ -141,12 +155,19 @@ class MarketDataUpdater:
             # Récupération des dernières transactions
             recent_trades = self.data_collector.get_recent_trades(symbol)
             
+            # Récupération des informations sur la liquidité
+            funding_rate = self.data_collector.get_funding_rate(symbol)
+            
             # Construction du dictionnaire de données
             market_data = {
                 "timestamp": datetime.now(),
-                "price": current_price,
+                "symbol": symbol,
+                "ticker": ticker,
                 "order_book": order_book,
-                "recent_trades": recent_trades
+                "recent_trades": recent_trades,
+                "funding_rate": funding_rate,
+                "source": "bybit",
+                "network": "testnet" if self.use_testnet else "mainnet"
             }
             
             return market_data
@@ -157,7 +178,7 @@ class MarketDataUpdater:
 
     def _calculate_indicators(self, symbol: str, market_data: Dict[str, Any]) -> Dict[str, Any]:
         """
-        Calcule les indicateurs techniques
+        Calcule les indicateurs techniques pour Bybit
         
         Args:
             symbol: Symbole de la paire de trading
@@ -167,9 +188,22 @@ class MarketDataUpdater:
             Dict contenant les indicateurs calculés
         """
         try:
-            # TODO: Implémenter le calcul des indicateurs
-            # Pour l'instant, retourne un dictionnaire vide
-            return {}
+            # Récupération de l'historique des prix pour le calcul des indicateurs
+            historical_prices = self.data_collector.get_klines(symbol, interval="1h", limit=100)
+            
+            if not historical_prices:
+                return {}
+            
+            # TODO: Implémenter le calcul des indicateurs avec les données Bybit
+            indicators = {
+                "timestamp": datetime.now(),
+                "symbol": symbol,
+                "calculations": {},  # À implémenter avec les indicateurs spécifiques
+                "source": "bybit",
+                "network": "testnet" if self.use_testnet else "mainnet"
+            }
+            
+            return indicators
             
         except Exception as e:
             self.logger.error(f"Error calculating indicators for {symbol}: {str(e)}")
