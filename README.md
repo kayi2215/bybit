@@ -1,38 +1,64 @@
-# Crypto Trading Bot
+# Bot de Trading Crypto
 
-## Description
-Bot de trading automatisé pour les crypto-monnaies, utilisant l'API Binance pour la collecte de données de marché en temps réel.
+Bot de trading automatique pour le marché des cryptomonnaies utilisant l'API Binance.
 
-## Installation
-1. Cloner le repository
-2. Installer les dépendances : `pip install -r requirements.txt`
-3. Copier le fichier `.env.example` vers `.env` et remplir avec vos clés API
-4. Configurer les paires de trading dans `config.py`
+## Structure du Projet
 
-## Configuration
-- Créez un compte sur Binance et générez vos clés API
-- Ajoutez vos clés API dans le fichier `.env`
-- Modifiez les paires de trading dans `config.py` selon vos besoins
-
-## Utilisation
-```python
-from data_collector.market_data import MarketDataCollector
-from config import BINANCE_API_KEY, BINANCE_API_SECRET, TRADING_PAIRS
-
-# Initialiser le collecteur de données
-collector = MarketDataCollector(BINANCE_API_KEY, BINANCE_API_SECRET)
-
-# Obtenir le prix actuel
-btc_price = collector.get_current_price('BTCUSDT')
-
-# Obtenir les données historiques
-btc_klines = collector.get_klines('BTCUSDT', '1h', limit=100)
-
-# Obtenir le carnet d'ordres
-order_book = collector.get_order_book('BTCUSDT')
+```
+bot/
+├── config/             # Configuration et variables d'environnement
+│   ├── config.py
+│   └── .env
+├── logs/              # Fichiers de logs
+├── src/               # Code source
+│   ├── bot/          # Logique principale du bot
+│   ├── data_collector/# Collecte de données de marché
+│   ├── monitoring/   # Surveillance des APIs
+│   └── utils/        # Utilitaires
+├── tests/            # Tests unitaires et d'intégration
+└── main.py           # Point d'entrée principal
 ```
 
-## Sécurité
-- Ne jamais commiter vos clés API
-- Utiliser des variables d'environnement pour les informations sensibles
-- Limiter les permissions des clés API au minimum nécessaire
+## Installation
+
+1. Cloner le repository
+2. Créer un environnement virtuel :
+   ```bash
+   python -m venv venv
+   source venv/bin/activate  # Sur Unix
+   ```
+3. Installer les dépendances :
+   ```bash
+   pip install -r requirements.txt
+   ```
+4. Copier `.env.example` vers `.env` et configurer vos clés API
+
+## Configuration
+
+1. Configurer les variables d'environnement dans `.env` :
+   - `BINANCE_API_KEY`: Votre clé API Binance
+   - `BINANCE_API_SECRET`: Votre clé secrète API Binance
+   - `USE_TESTNET`: `True` pour utiliser le testnet Binance
+
+## Utilisation
+
+1. Lancer le bot :
+   ```bash
+   python main.py
+   ```
+
+2. Le bot va :
+   - Démarrer le service de monitoring
+   - Collecter les données de marché
+   - Exécuter la stratégie de trading
+   - Logger toutes les opérations
+
+## Monitoring
+
+Le système de monitoring surveille :
+- La latence des appels API
+- La disponibilité des endpoints
+- Les taux d'erreur
+- Les performances globales
+
+Les logs et métriques sont stockés dans le dossier `logs/`.
