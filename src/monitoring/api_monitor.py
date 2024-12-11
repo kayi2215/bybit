@@ -124,6 +124,35 @@ class APIMonitor:
             'error_rate': self.consecutive_failures / len(latencies) if latencies else 0
         }
 
+    def check_api_health(self, api_endpoint: str) -> bool:
+        """
+        Vérifie la santé de l'API en contrôlant sa disponibilité et sa latence
+        :param api_endpoint: URL de l'endpoint à vérifier
+        :return: True si l'API est en bonne santé, False sinon
+        """
+        try:
+            # Vérifier la disponibilité
+            if not self.check_availability(api_endpoint):
+                self.logger.warning(f"API {api_endpoint} is not available")
+                return False
+            
+            # Mesurer la latence
+            latency = self.measure_latency(api_endpoint)
+            if latency is None or latency > self.alert_thresholds['latency']:
+                self.logger.warning(f"API {api_endpoint} latency is too high or failed: {latency}ms")
+                return False
+            
+            # Vérifier les échecs consécutifs
+            if self.consecutive_failures >= self.alert_thresholds['consecutive_failures']:
+                self.logger.warning(f"API {api_endpoint} has too many consecutive failures")
+                return False
+            
+            return True
+            
+        except Exception as e:
+            self.logger.error(f"Error checking API health: {str(e)}")
+            return False
+
     def monitor_endpoint(self, api_endpoint: str):
         """Surveille un endpoint API"""
         self.logger.info(f"Monitoring endpoint: {api_endpoint}")

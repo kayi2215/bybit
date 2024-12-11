@@ -6,6 +6,7 @@ from datetime import datetime, timedelta
 import logging
 import os
 from dotenv import load_dotenv
+import time
 
 class MongoDBManager:
     def __init__(self):
@@ -15,26 +16,46 @@ class MongoDBManager:
         # Configuration du logging
         self.logger = logging.getLogger(__name__)
         
-        # Construction de l'URI MongoDB avec les identifiants
-        mongodb_uri = f"mongodb://admin:secure_password@localhost:27017/"
+        # Get MongoDB credentials from environment variables
+        mongodb_user = os.getenv('MONGO_ROOT_USER', 'admin')
+        mongodb_password = os.getenv('MONGO_ROOT_PASSWORD', 'secure_password')
+        mongodb_database = os.getenv('MONGODB_DATABASE', 'trading_db')
         
-        # Connexion à MongoDB
-        try:
-            self.client = MongoClient(mongodb_uri)
-            # Test de la connexion
-            self.client.admin.command('ping')
-            self.logger.info("Successfully connected to MongoDB")
-        except Exception as e:
-            self.logger.error(f"Failed to connect to MongoDB: {str(e)}")
-            raise
+        # Collections names from environment variables
+        market_data_collection = os.getenv('MONGODB_COLLECTION_MARKET_DATA', 'market_data')
+        indicators_collection = os.getenv('MONGODB_COLLECTION_INDICATORS', 'indicators')
+        trades_collection = os.getenv('MONGODB_COLLECTION_TRADES', 'trades')
+        
+        # Construction de l'URI MongoDB avec les identifiants
+        mongodb_uri = f"mongodb://{mongodb_user}:{mongodb_password}@localhost:27017/"
+        
+        # Connexion à MongoDB avec retry logic
+        max_retries = 3
+        retry_count = 0
+        while retry_count < max_retries:
+            try:
+                self.client = MongoClient(mongodb_uri, serverSelectionTimeoutMS=5000)
+                # Test de la connexion
+                self.client.admin.command('ping')
+                self.logger.info("Successfully connected to MongoDB")
+                break
+            except Exception as e:
+                retry_count += 1
+                if retry_count == max_retries:
+                    self.logger.error(f"Failed to connect to MongoDB after {max_retries} attempts: {str(e)}")
+                    raise
+                self.logger.warning(f"Failed to connect to MongoDB (attempt {retry_count}): {str(e)}")
+                time.sleep(1)  # Wait before retrying
         
         # Sélection de la base de données
-        self.db: Database = self.client['trading_db']
+        self.db: Database = self.client[mongodb_database]
         
         # Collections
-        self.market_data: Collection = self.db['market_data']
-        self.indicators: Collection = self.db['indicators']
-        self.trades: Collection = self.db['trades']
+        self.market_data: Collection = self.db[market_data_collection]
+        self.indicators: Collection = self.db[indicators_collection]
+        self.trades: Collection = self.db[trades_collection]
+        self.backtest_results: Collection = self.db['backtest_results']
+        self.strategy_config: Collection = self.db['strategy_config']
         
         # Création des index
         self._setup_indexes()
@@ -53,6 +74,12 @@ class MongoDBManager:
         # Index pour trades
         self.trades.create_index([("timestamp", DESCENDING)])
         self.trades.create_index([("symbol", ASCENDING), ("timestamp", DESCENDING)])
+        
+        # Index pour backtest_results
+        self.backtest_results.create_index([("strategy_name", ASCENDING), ("timestamp", DESCENDING)])
+        
+        # Index pour strategy_config
+        self.strategy_config.create_index([("strategy_name", ASCENDING)])
 
     def store_market_data(self, symbol: str, data: Dict[str, Any]):
         """
@@ -101,6 +128,99 @@ class MongoDBManager:
             self.logger.info(f"Stored trade for {trade_data.get('symbol')}")
         except Exception as e:
             self.logger.error(f"Error storing trade: {str(e)}")
+            raise
+
+    def store_backtest_result(self, strategy_name: str, result: Dict[str, Any]):
+        """
+        Stocke le résultat d'un backtest
+        :param strategy_name: Nom de la stratégie
+        :param result: Résultat du backtest
+        """
+        try:
+            document = {
+                "strategy_name": strategy_name,
+                "timestamp": datetime.now(),
+                "result": result
+            }
+            self.backtest_results.insert_one(document)
+            self.logger.info(f"Stored backtest result for {strategy_name}")
+        except Exception as e:
+            self.logger.error(f"Error storing backtest result: {str(e)}")
+            raise
+
+    def store_strategy_config(self, strategy_name: str, config: Dict[str, Any]):
+        """
+        Stocke la configuration d'une stratégie
+        :param strategy_name: Nom de la stratégie
+        :param config: Configuration de la stratégie
+        """
+        try:
+            document = {
+                "strategy_name": strategy_name,
+                "config": config
+            }
+            self.strategy_config.insert_one(document)
+            self.logger.info(f"Stored strategy config for {strategy_name}")
+        except Exception as e:
+            self.logger.error(f"Error storing strategy config: {str(e)}")
+            raise
+
+    def store_market_data_bulk(self, data_list: List[Dict[str, Any]]):
+        """
+        Stocke plusieurs données de marché en une seule opération
+        :param data_list: Liste des données à stocker
+        """
+        try:
+            if not data_list:
+                return
+            
+            # Validate and prepare documents
+            documents = []
+            for data in data_list:
+                if not isinstance(data, dict) or 'symbol' not in data or 'data' not in data:
+                    raise ValueError("Invalid market data format")
+                
+                document = {
+                    "symbol": data['symbol'],
+                    "timestamp": datetime.now(),
+                    "data": data['data']
+                }
+                documents.append(document)
+            
+            # Insert documents in bulk
+            result = self.market_data.insert_many(documents)
+            self.logger.info(f"Stored {len(result.inserted_ids)} market data documents")
+        except Exception as e:
+            self.logger.error(f"Error storing market data in bulk: {str(e)}")
+            raise
+
+    def store_indicators_bulk(self, indicators_list: List[Dict[str, Any]]):
+        """
+        Stocke plusieurs indicateurs en une seule opération
+        :param indicators_list: Liste des indicateurs à stocker
+        """
+        try:
+            if not indicators_list:
+                return
+            
+            # Validate and prepare documents
+            documents = []
+            for indicator_data in indicators_list:
+                if not isinstance(indicator_data, dict) or 'symbol' not in indicator_data or 'indicators' not in indicator_data:
+                    raise ValueError("Invalid indicator data format")
+                
+                document = {
+                    "symbol": indicator_data['symbol'],
+                    "timestamp": datetime.now(),
+                    "indicators": indicator_data['indicators']
+                }
+                documents.append(document)
+            
+            # Insert documents in bulk
+            result = self.indicators.insert_many(documents)
+            self.logger.info(f"Stored {len(result.inserted_ids)} indicator documents")
+        except Exception as e:
+            self.logger.error(f"Error storing indicators in bulk: {str(e)}")
             raise
 
     def get_latest_market_data(self, symbol: str) -> Optional[Dict[str, Any]]:
@@ -170,6 +290,30 @@ class MongoDBManager:
             self.logger.error(f"Error retrieving trades history: {str(e)}")
             return []
 
+    def get_backtest_results(self, strategy_name: str) -> List[Dict[str, Any]]:
+        """
+        Récupère les résultats des backtests pour une stratégie
+        :param strategy_name: Nom de la stratégie
+        :return: Liste des résultats des backtests
+        """
+        try:
+            return list(self.backtest_results.find({"strategy_name": strategy_name}).sort("timestamp", DESCENDING))
+        except Exception as e:
+            self.logger.error(f"Error retrieving backtest results: {str(e)}")
+            return []
+
+    def get_strategy_config(self, strategy_name: str) -> Optional[Dict[str, Any]]:
+        """
+        Récupère la configuration d'une stratégie
+        :param strategy_name: Nom de la stratégie
+        :return: Configuration de la stratégie
+        """
+        try:
+            return self.strategy_config.find_one({"strategy_name": strategy_name})
+        except Exception as e:
+            self.logger.error(f"Error retrieving strategy config: {str(e)}")
+            return None
+
     def cleanup_old_data(self, days_to_keep: int = 30):
         """
         Nettoie les anciennes données
@@ -179,12 +323,24 @@ class MongoDBManager:
             cutoff_date = datetime.now() - timedelta(days=days_to_keep)
             
             # Nettoyer les données de marché
-            self.market_data.delete_many({"timestamp": {"$lt": cutoff_date}})
+            result = self.market_data.delete_many({"timestamp": {"$lt": cutoff_date}})
+            self.logger.info(f"Deleted {result.deleted_count} old market data documents")
             
             # Nettoyer les indicateurs
-            self.indicators.delete_many({"timestamp": {"$lt": cutoff_date}})
+            result = self.indicators.delete_many({"timestamp": {"$lt": cutoff_date}})
+            self.logger.info(f"Deleted {result.deleted_count} old indicators documents")
             
-            self.logger.info(f"Cleaned up data older than {days_to_keep} days")
+            # Nettoyer les transactions
+            result = self.trades.delete_many({"timestamp": {"$lt": cutoff_date}})
+            self.logger.info(f"Deleted {result.deleted_count} old trades documents")
+            
+            # Nettoyer les résultats des backtests
+            result = self.backtest_results.delete_many({"timestamp": {"$lt": cutoff_date}})
+            self.logger.info(f"Deleted {result.deleted_count} old backtest results documents")
+            
+            # Force un délai pour s'assurer que les suppressions sont effectuées
+            time.sleep(0.5)
+            
         except Exception as e:
             self.logger.error(f"Error cleaning up old data: {str(e)}")
             raise

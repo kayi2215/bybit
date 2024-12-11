@@ -2,6 +2,7 @@ import unittest
 from datetime import datetime, timedelta
 from unittest.mock import patch, MagicMock
 from src.database.mongodb_manager import MongoDBManager
+import time
 
 class TestMongoDBManager(unittest.TestCase):
     def setUp(self):
@@ -100,8 +101,14 @@ class TestMongoDBManager(unittest.TestCase):
         old_data = {"price": 45000.0, "volume": 90.0}
         self.mongodb_manager.store_market_data(symbol, old_data)
         
+        # Attendre un peu pour s'assurer que les données sont stockées
+        time.sleep(0.5)
+        
         # Nettoyage des données
         self.mongodb_manager.cleanup_old_data(days_to_keep=0)
+        
+        # Attendre un peu pour s'assurer que les données sont supprimées
+        time.sleep(0.5)
         
         # Vérification que les données ont été supprimées
         retrieved_data = self.mongodb_manager.get_latest_market_data(symbol)

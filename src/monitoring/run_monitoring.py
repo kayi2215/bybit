@@ -1,11 +1,13 @@
+import threading
+from src.monitoring.api_monitor import APIMonitor
 import time
-from monitoring.api_monitor import APIMonitor
+import logging
 import signal
 import sys
 from datetime import datetime, timedelta
 
 class MonitoringService:
-    def __init__(self, check_interval: int = 60):
+    def __init__(self, check_interval=60):
         """
         Initialise le service de monitoring
         :param check_interval: Intervalle entre les vérifications en secondes (défaut: 60s)
@@ -21,6 +23,7 @@ class MonitoringService:
         self.last_check = {}
         for endpoint in self.endpoints:
             self.last_check[endpoint] = datetime.now() - timedelta(seconds=check_interval)
+        self.logger = logging.getLogger('monitoring_service')
 
     def signal_handler(self, signum, frame):
         """Gestionnaire pour l'arrêt propre du service"""
@@ -57,6 +60,10 @@ class MonitoringService:
             time.sleep(1)
 
         print("Service de monitoring arrêté")
+
+    def stop(self):
+        """Arrête le service de monitoring"""
+        self.running = False
 
 if __name__ == "__main__":
     # Créer et démarrer le service

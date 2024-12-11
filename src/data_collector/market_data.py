@@ -69,6 +69,21 @@ class MarketDataCollector:
             self.logger.error(f"Error fetching order book for {symbol}: {str(e)}")
             raise
 
+    def get_recent_trades(self, symbol: str, limit: int = 100) -> List[Dict[str, Any]]:
+        """
+        Récupère les transactions récentes pour un symbole
+        :param symbol: Symbole de la paire de trading (ex: 'BTCUSDT')
+        :param limit: Nombre de transactions à récupérer
+        :return: Liste des transactions récentes
+        """
+        try:
+            trades = self.client.get_recent_trades(symbol=symbol, limit=limit)
+            self.logger.info(f"Retrieved {len(trades)} recent trades for {symbol}")
+            return trades
+        except BinanceAPIException as e:
+            self.logger.error(f"Error fetching recent trades for {symbol}: {str(e)}")
+            raise
+
     def get_technical_analysis(self, symbol: str, interval: str = '1h', limit: int = 100) -> Dict[str, Any]:
         """
         Récupère les données et effectue une analyse technique complète
