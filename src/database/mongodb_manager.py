@@ -275,21 +275,138 @@ class MongoDBManager:
             self.logger.error(f"Error storing monitoring event: {str(e)}")
             raise
 
-    def get_latest_market_data(self, symbol: str) -> Optional[Dict[str, Any]]:
+    def get_latest_market_data(self, symbol: str, limit: int = 1) -> List[Dict[str, Any]]:
         """
         Récupère les dernières données de marché pour un symbole
         :param symbol: Symbole de la paire de trading
-        :return: Dernières données de marché
+        :param limit: Nombre de documents à récupérer
+        :return: Liste des données de marché
         """
         try:
-            data = self.market_data.find_one(
-                {"symbol": symbol},
-                sort=[("timestamp", DESCENDING)]
-            )
-            return data
+            cursor = self.market_data.find(
+                {"symbol": symbol}
+            ).sort("timestamp", DESCENDING).limit(limit)
+            return list(cursor)
         except Exception as e:
             self.logger.error(f"Error retrieving market data: {str(e)}")
-            return None
+            raise
+
+    def get_latest_indicators(self, symbol: str, limit: int = 1) -> List[Dict[str, Any]]:
+        """
+        Récupère les derniers indicateurs techniques pour un symbole
+        :param symbol: Symbole de la paire de trading
+        :param limit: Nombre de documents à récupérer
+        :return: Liste des indicateurs
+        """
+        try:
+            cursor = self.indicators.find(
+                {"symbol": symbol}
+            ).sort("timestamp", DESCENDING).limit(limit)
+            return list(cursor)
+        except Exception as e:
+            self.logger.error(f"Error retrieving indicators: {str(e)}")
+            raise
+
+    def get_trades_by_timeframe(self, start_time: datetime, end_time: datetime = None) -> List[Dict[str, Any]]:
+        """
+        Récupère les transactions dans une période donnée
+        :param start_time: Début de la période
+        :param end_time: Fin de la période (par défaut: maintenant)
+        :return: Liste des transactions
+        """
+        try:
+            if end_time is None:
+                end_time = datetime.now()
+            
+            cursor = self.trades.find({
+                "timestamp": {
+                    "$gte": start_time,
+                    "$lte": end_time
+                }
+            }).sort("timestamp", ASCENDING)
+            
+            return list(cursor)
+        except Exception as e:
+            self.logger.error(f"Error retrieving trades: {str(e)}")
+            raise
+
+    def store_monitoring_data(self, data: Dict[str, Any]):
+        """
+        Stocke les données de monitoring
+        :param data: Données de monitoring à stocker
+        """
+        try:
+            data["timestamp"] = datetime.now()
+            self.monitoring.insert_one(data)
+            self.logger.debug("Stored monitoring data")
+        except Exception as e:
+            self.logger.error(f"Error storing monitoring data: {str(e)}")
+            raise
+
+    def get_monitoring_data(self, start_time: datetime, end_time: datetime = None) -> List[Dict[str, Any]]:
+        """
+        Récupère les données de monitoring pour une période donnée
+        :param start_time: Début de la période
+        :param end_time: Fin de la période (par défaut: maintenant)
+        :return: Liste des données de monitoring
+        """
+        try:
+            if end_time is None:
+                end_time = datetime.now()
+            
+            cursor = self.monitoring.find({
+                "timestamp": {
+                    "$gte": start_time,
+                    "$lte": end_time
+                }
+            }).sort("timestamp", ASCENDING)
+            
+            return list(cursor)
+        except Exception as e:
+            self.logger.error(f"Error retrieving monitoring data: {str(e)}")
+            raise
+
+    def store_api_metric(self, metric_data: Dict[str, Any]):
+        """
+        Stocke une métrique d'API
+        :param metric_data: Données de la métrique à stocker
+        """
+        try:
+            metric_data["timestamp"] = datetime.now()
+            self.api_metrics.insert_one(metric_data)
+            self.logger.debug(f"Stored API metric for {metric_data.get('endpoint')}")
+        except Exception as e:
+            self.logger.error(f"Error storing API metric: {str(e)}")
+            raise
+
+    def get_api_metrics(self, endpoint: str = None, metric_type: str = None, 
+                       start_time: datetime = None, end_time: datetime = None) -> List[Dict[str, Any]]:
+        """
+        Récupère les métriques d'API avec filtres optionnels
+        :param endpoint: Filtre par endpoint
+        :param metric_type: Filtre par type de métrique
+        :param start_time: Début de la période
+        :param end_time: Fin de la période
+        :return: Liste des métriques d'API
+        """
+        try:
+            query = {}
+            if endpoint:
+                query["endpoint"] = endpoint
+            if metric_type:
+                query["metric_type"] = metric_type
+            if start_time or end_time:
+                query["timestamp"] = {}
+                if start_time:
+                    query["timestamp"]["$gte"] = start_time
+                if end_time:
+                    query["timestamp"]["$lte"] = end_time
+            
+            cursor = self.api_metrics.find(query).sort("timestamp", ASCENDING)
+            return list(cursor)
+        except Exception as e:
+            self.logger.error(f"Error retrieving API metrics: {str(e)}")
+            raise
 
     def get_historical_data(self, symbol: str, start_time: datetime, end_time: datetime) -> List[Dict[str, Any]]:
         """
@@ -310,36 +427,6 @@ class MongoDBManager:
             return list(self.market_data.find(query).sort("timestamp", ASCENDING))
         except Exception as e:
             self.logger.error(f"Error retrieving historical data: {str(e)}")
-            return []
-
-    def get_latest_indicators(self, symbol: str) -> Optional[Dict[str, Any]]:
-        """
-        Récupère les derniers indicateurs techniques pour un symbole
-        :param symbol: Symbole de la paire de trading
-        :return: Derniers indicateurs techniques
-        """
-        try:
-            data = self.indicators.find_one(
-                {"symbol": symbol},
-                sort=[("timestamp", DESCENDING)]
-            )
-            return data
-        except Exception as e:
-            self.logger.error(f"Error retrieving indicators: {str(e)}")
-            return None
-
-    def get_trades_history(self, symbol: Optional[str] = None, limit: int = 100) -> List[Dict[str, Any]]:
-        """
-        Récupère l'historique des transactions
-        :param symbol: Symbole de la paire de trading (optionnel)
-        :param limit: Nombre maximum de transactions à récupérer
-        :return: Liste des transactions
-        """
-        try:
-            query = {"symbol": symbol} if symbol else {}
-            return list(self.trades.find(query).sort("timestamp", DESCENDING).limit(limit))
-        except Exception as e:
-            self.logger.error(f"Error retrieving trades history: {str(e)}")
             return []
 
     def get_backtest_results(self, strategy_name: str) -> List[Dict[str, Any]]:
@@ -366,57 +453,19 @@ class MongoDBManager:
             self.logger.error(f"Error retrieving strategy config: {str(e)}")
             return None
 
-    def get_api_metrics(self, endpoint: str, metric_type: str, 
-                       start_time: datetime, end_time: datetime) -> List[Dict[str, Any]]:
+    def get_trades_history(self, symbol: Optional[str] = None, limit: int = 100) -> List[Dict[str, Any]]:
         """
-        Récupère les métriques de l'API pour une période donnée
-        :param endpoint: Endpoint de l'API
-        :param metric_type: Type de métrique
-        :param start_time: Début de la période
-        :param end_time: Fin de la période
-        :return: Liste des métriques
+        Récupère l'historique des transactions
+        :param symbol: Symbole de la paire de trading (optionnel)
+        :param limit: Nombre maximum de transactions à récupérer
+        :return: Liste des transactions
         """
         try:
-            query = {
-                "endpoint": endpoint,
-                "metric_type": metric_type,
-                "timestamp": {
-                    "$gte": start_time,
-                    "$lte": end_time
-                }
-            }
-            return list(self.api_metrics.find(query).sort("timestamp", DESCENDING))
+            query = {"symbol": symbol} if symbol else {}
+            return list(self.trades.find(query).sort("timestamp", DESCENDING).limit(limit))
         except Exception as e:
-            self.logger.error(f"Error retrieving API metrics: {str(e)}")
-            raise
-
-    def get_monitoring_events(self, endpoint: Optional[str] = None,
-                            event_type: Optional[str] = None,
-                            start_time: Optional[datetime] = None,
-                            end_time: Optional[datetime] = None) -> List[Dict[str, Any]]:
-        """
-        Récupère les événements de monitoring
-        :param endpoint: Filtrer par endpoint (optionnel)
-        :param event_type: Filtrer par type d'événement (optionnel)
-        :param start_time: Début de la période (optionnel)
-        :param end_time: Fin de la période (optionnel)
-        :return: Liste des événements
-        """
-        try:
-            query = {}
-            if endpoint:
-                query["endpoint"] = endpoint
-            if event_type:
-                query["event_type"] = event_type
-            if start_time and end_time:
-                query["timestamp"] = {
-                    "$gte": start_time,
-                    "$lte": end_time
-                }
-            return list(self.monitoring.find(query).sort("timestamp", DESCENDING))
-        except Exception as e:
-            self.logger.error(f"Error retrieving monitoring events: {str(e)}")
-            raise
+            self.logger.error(f"Error retrieving trades history: {str(e)}")
+            return []
 
     def cleanup_old_data(self, days_to_keep: int = 30):
         """
