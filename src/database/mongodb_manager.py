@@ -507,10 +507,7 @@ class MongoDBManager:
             raise
 
     def close(self):
-        """Ferme la connexion à MongoDB"""
-        try:
+        """Ferme la connexion MongoDB"""
+        if hasattr(self, 'client'):
             self.client.close()
             self.logger.info("MongoDB connection closed")
-        except Exception as e:
-            self.logger.error(f"Error closing MongoDB connection: {str(e)}")
-            raise

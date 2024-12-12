@@ -81,7 +81,7 @@ class MarketDataUpdater:
         while self.is_running:
             try:
                 # Vérifie d'abord la disponibilité de l'API
-                api_endpoint = "/v5/market/tickers"
+                api_endpoint = "/v5/market/time" if not self.use_testnet else "/v5/market/time"
                 if not self.api_monitor.check_api_health(api_endpoint):
                     self.logger.error("API Bybit is not healthy, skipping update")
                     time.sleep(self.update_interval)
@@ -137,7 +137,7 @@ class MarketDataUpdater:
 
     def _collect_market_data(self, symbol: str) -> Dict[str, Any]:
         """
-        Collecte les données de marché pour un symbole via l'API Bybit
+        Collecte les données de marché pour un symbole
         
         Args:
             symbol: Symbole de la paire de trading
@@ -146,7 +146,7 @@ class MarketDataUpdater:
             Dict contenant les données de marché
         """
         try:
-            # Récupération du ticker (prix actuel et autres informations)
+            # Récupération du prix actuel et autres informations
             ticker = self.data_collector.get_ticker(symbol)
             
             # Récupération du carnet d'ordres
@@ -155,18 +155,15 @@ class MarketDataUpdater:
             # Récupération des dernières transactions
             recent_trades = self.data_collector.get_recent_trades(symbol)
             
-            # Récupération des informations sur la liquidité
-            funding_rate = self.data_collector.get_funding_rate(symbol)
-            
             # Construction du dictionnaire de données
             market_data = {
                 "timestamp": datetime.now(),
                 "symbol": symbol,
-                "ticker": ticker,
+                "price": ticker.get("last_price"),
+                "volume": ticker.get("volume_24h"),
                 "order_book": order_book,
                 "recent_trades": recent_trades,
-                "funding_rate": funding_rate,
-                "source": "bybit",
+                "exchange": "bybit",
                 "network": "testnet" if self.use_testnet else "mainnet"
             }
             
@@ -178,7 +175,7 @@ class MarketDataUpdater:
 
     def _calculate_indicators(self, symbol: str, market_data: Dict[str, Any]) -> Dict[str, Any]:
         """
-        Calcule les indicateurs techniques pour Bybit
+        Calcule les indicateurs techniques
         
         Args:
             symbol: Symbole de la paire de trading
@@ -188,39 +185,69 @@ class MarketDataUpdater:
             Dict contenant les indicateurs calculés
         """
         try:
-            # Récupération de l'historique des prix pour le calcul des indicateurs
-            historical_prices = self.data_collector.get_klines(symbol, interval="1h", limit=100)
+            # Récupération des données historiques pour le calcul des indicateurs
+            historical_data = self.data_collector.get_klines(
+                symbol=symbol,
+                interval="1h",
+                limit=100
+            )
             
-            if not historical_prices:
-                return {}
+            if not historical_data or len(historical_data) == 0:
+                self.logger.warning(f"No historical data available for {symbol}")
+                return {
+                    "timestamp": datetime.now(),
+                    "symbol": symbol,
+                    "calculations": {}
+                }
             
-            # TODO: Implémenter le calcul des indicateurs avec les données Bybit
+            # TODO: Implémenter le calcul des indicateurs techniques
+            # Cette partie devrait être identique pour Bybit et Binance
             indicators = {
                 "timestamp": datetime.now(),
                 "symbol": symbol,
-                "calculations": {},  # À implémenter avec les indicateurs spécifiques
-                "source": "bybit",
-                "network": "testnet" if self.use_testnet else "mainnet"
+                "calculations": {}
             }
             
             return indicators
             
         except Exception as e:
             self.logger.error(f"Error calculating indicators for {symbol}: {str(e)}")
-            return None
+            return {
+                "timestamp": datetime.now(),
+                "symbol": symbol,
+                "calculations": {}
+            }
 
     def get_latest_data(self, symbol: str) -> Dict[str, Any]:
         """
-        Récupère les dernières données pour un symbole
+        Récupère les dernières données de marché pour un symbole
         
         Args:
             symbol: Symbole de la paire de trading
             
         Returns:
-            Dict contenant les dernières données
+            Dict contenant les dernières données de marché
         """
         try:
-            return self.db.get_latest_market_data(symbol)
+            # Récupération des dernières données depuis MongoDB
+            latest_data = self.db.get_latest_market_data(symbol)
+            
+            if not latest_data:
+                self.logger.warning(f"No latest data found for {symbol}")
+                return {
+                    "symbol": symbol,
+                    "timestamp": datetime.now(),
+                    "price": None,
+                    "volume": None
+                }
+                
+            return latest_data
+            
         except Exception as e:
-            self.logger.error(f"Error retrieving latest data for {symbol}: {str(e)}")
-            return None
+            self.logger.error(f"Error getting latest data for {symbol}: {str(e)}")
+            return {
+                "symbol": symbol,
+                "timestamp": datetime.now(),
+                "price": None,
+                "volume": None
+            }
