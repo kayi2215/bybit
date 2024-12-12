@@ -24,7 +24,7 @@ class APIMonitor:
             'rate_limit_threshold': 0.8  # 80% de la limite d'utilisation
         }
         self.consecutive_failures = 0
-        self.testnet = testnet
+        self.testnet = False
         self.exchange = "bybit"
         
         # Initialiser les compteurs de requêtes
@@ -39,13 +39,15 @@ class APIMonitor:
         # Initialiser le client Bybit
         if self.api_key and self.api_secret:
             self.client = HTTP(
-                testnet=testnet,
+                testnet=False,
                 api_key=self.api_key,
                 api_secret=self.api_secret
             )
         else:
             self.logger.warning("API credentials not found. Running in public API mode only.")
             self.client = None
+
+        self.base_url = "https://api.bybit.com"
 
     def _setup_logging(self):
         """Configure le système de logging"""
@@ -80,8 +82,7 @@ class APIMonitor:
             start_time = time.time()
             
             if not self.client:
-                base_url = "https://api-testnet.bybit.com" if self.testnet else "https://api.bybit.com"
-                response = requests.get(f"{base_url}{endpoint}")
+                response = requests.get(f"{self.base_url}{endpoint}")
             else:
                 method_map = {
                     "get_ticker": self.client.get_tickers,
@@ -117,8 +118,7 @@ class APIMonitor:
         """Vérifie si l'API Bybit est disponible"""
         try:
             if not self.client:
-                base_url = "https://api-testnet.bybit.com" if self.testnet else "https://api.bybit.com"
-                response = requests.get(f"{base_url}{endpoint}", params={"category": "spot", "symbol": "BTCUSDT"})
+                response = requests.get(f"{self.base_url}{endpoint}", params={"category": "spot", "symbol": "BTCUSDT"})
                 success = response.status_code == 200 and self.is_valid_response(response.json())
             else:
                 response = self.client.get_tickers(
@@ -144,11 +144,11 @@ class APIMonitor:
 
     def check_rate_limits(self) -> Dict:
         """Vérifie les limites de taux d'utilisation de l'API"""
-        if not self.client:
-            return {}
-        
         try:
-            response = self.client.get_wallet_balance(accountType="UNIFIED")
+            if not self.client:
+                response = requests.get(f"{self.base_url}/v5/account/wallet-balance", params={"accountType": "UNIFIED"})
+            else:
+                response = self.client.get_wallet_balance(accountType="UNIFIED")
             
             # Simuler les limites basées sur les headers de réponse
             current_usage = 50  # Valeur simulée

@@ -1,5 +1,5 @@
 import threading
-from src.monitoring.api_monitor import APIMonitor
+from api_monitor import APIMonitor
 import time
 import logging
 import signal
@@ -64,7 +64,7 @@ class MonitoringService:
         # Handler pour le fichier
         log_dir = os.path.join(os.path.dirname(__file__), '..', '..', 'logs')
         os.makedirs(log_dir, exist_ok=True)
-        fh = logging.FileHandler(os.path.join(log_dir, 'monitoring_service.log'))
+        fh = logging.FileHandler(os.path.join(log_dir, 'bybit_api_monitoring.log'))
         fh.setLevel(logging.INFO)
         fh.setFormatter(formatter)
         self.logger.addHandler(fh)
