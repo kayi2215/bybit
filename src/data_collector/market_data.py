@@ -92,47 +92,31 @@ class MarketDataCollector:
                 raise ValueError(f"Format de réponse invalide pour {symbol}")
             
             # Transform data to match Binance format exactly
-            formatted_klines = []
-            for kline in reversed(klines['result']['list']):  # Inverser l'ordre pour avoir l'ordre chronologique
-                timestamp = int(kline[0])
-                formatted_kline = [
-                    timestamp,                    # timestamp
-                    float(kline[1]),             # open
-                    float(kline[2]),             # high
-                    float(kline[3]),             # low
-                    float(kline[4]),             # close
-                    float(kline[5]),             # volume
-                    timestamp + interval_to_milliseconds(interval),  # close_time
-                    float(kline[6]),             # quote_asset_volume
-                    int(float(kline[5])),        # number_of_trades (using volume as approximation)
-                    float(kline[5]) * 0.5,       # taker_buy_base_asset_volume (approximation)
-                    float(kline[6]) * 0.5,       # taker_buy_quote_asset_volume (approximation)
-                    0                            # ignore
-                ]
-                formatted_klines.append(formatted_kline)
+            data = []
+            for kline in reversed(klines['result']['list']):
+                # Bybit kline format: [timestamp, open, high, low, close, volume, turnover]
+                data.append([
+                    int(kline[0]),                    # timestamp
+                    float(kline[1]),                  # open
+                    float(kline[2]),                  # high
+                    float(kline[3]),                  # low
+                    float(kline[4]),                  # close
+                    float(kline[5]),                  # volume
+                    int(kline[0]) + interval_to_milliseconds(interval), # close_time
+                    float(kline[6]),                  # quote_asset_volume (turnover in Bybit)
+                    0,                                # number_of_trades (not provided by Bybit)
+                    0.0,                              # taker_buy_base_asset_volume (not provided)
+                    0.0,                              # taker_buy_quote_asset_volume (not provided)
+                    0                                 # ignore
+                ])
             
-            # Create DataFrame with identical column names as Binance
-            df = pd.DataFrame(formatted_klines, columns=[
+            df = pd.DataFrame(data, columns=[
                 'timestamp', 'open', 'high', 'low', 'close',
                 'volume', 'close_time', 'quote_asset_volume',
                 'number_of_trades', 'taker_buy_base_asset_volume',
                 'taker_buy_quote_asset_volume', 'ignore'
             ])
-            
-            # Convert timestamp to datetime format
             df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
-            df['close_time'] = pd.to_datetime(df['close_time'], unit='ms')
-            
-            # Ensure all numeric columns are float type
-            numeric_columns = ['open', 'high', 'low', 'close', 'volume', 
-                             'quote_asset_volume', 'taker_buy_base_asset_volume', 
-                             'taker_buy_quote_asset_volume']
-            df[numeric_columns] = df[numeric_columns].astype(float)
-            
-            # Ensure number_of_trades is integer
-            df['number_of_trades'] = df['number_of_trades'].astype(int)
-            
-            self.logger.info(f"Retrieved {len(df)} klines for {symbol}")
             return df
             
         except Exception as e:
@@ -140,41 +124,54 @@ class MarketDataCollector:
             raise
 
     def get_order_book(self, symbol: str, limit: int = 100) -> Dict[str, Any]:
+        """
+        Récupère le carnet d'ordres pour un symbole
+        :param symbol: Symbole de la paire de trading (ex: 'BTCUSDT')
+        :param limit: Profondeur du carnet d'ordres
+        :return: Carnet d'ordres
+        """
         try:
             depth = self.client.get_orderbook(
                 category="spot",
                 symbol=symbol,
                 limit=limit
             )
-            # Transform to match Binance format
+            
+            # Transformer au format Binance
             return {
-                'lastUpdateId': depth['result']['u'],  # Update ID
-                'bids': [[float(item[0]), float(item[1])] for item in depth['result']['b']],  # Bids
-                'asks': [[float(item[0]), float(item[1])] for item in depth['result']['a']]   # Asks
+                'lastUpdateId': depth['result']['ts'],
+                'bids': [[price, qty] for price, qty in depth['result']['b']],
+                'asks': [[price, qty] for price, qty in depth['result']['a']]
             }
         except Exception as e:
             self.logger.error(f"Error fetching order book for {symbol}: {str(e)}")
             raise
 
     def get_recent_trades(self, symbol: str, limit: int = 100) -> List[Dict[str, Any]]:
+        """
+        Récupère les transactions récentes pour un symbole
+        :param symbol: Symbole de la paire de trading (ex: 'BTCUSDT')
+        :param limit: Nombre de transactions à récupérer
+        :return: Liste des transactions récentes
+        """
         try:
-            trades = self.client.get_public_trade_history(
+            trades = self.client.get_public_trading_history(
                 category="spot",
                 symbol=symbol,
                 limit=limit
             )
-            # Transform to match Binance format
+            
+            # Transformer au format Binance
             formatted_trades = []
             for trade in trades['result']['list']:
-                formatted_trade = {
-                    'id': int(str(trade['execId']).replace('.', '')),  # Convertir en int après avoir retiré le point
+                formatted_trades.append({
+                    'id': trade['execId'],
                     'price': float(trade['price']),
                     'qty': float(trade['size']),
                     'time': int(trade['time']),
                     'isBuyerMaker': trade['side'].lower() == 'sell',
-                    'isBestMatch': True
-                }
-                formatted_trades.append(formatted_trade)
+                    'isBestMatch': True  # Bybit n'a pas cet équivalent
+                })
             
             self.logger.info(f"Retrieved {len(formatted_trades)} recent trades for {symbol}")
             return formatted_trades
@@ -185,15 +182,10 @@ class MarketDataCollector:
     def get_technical_analysis(self, symbol: str, interval: str = '1h', limit: int = 100) -> Dict[str, Any]:
         try:
             df = self.get_klines(symbol, interval, limit)
-            indicators = self.technical_analyzer.calculate_all(df)
-            signals = self.technical_analyzer.get_signals(df)
-            summary = self.technical_analyzer.get_summary(df)
+            analysis = self.technical_analyzer.get_summary(df)
             
-            return {
-                'indicators': indicators,
-                'signals': signals,
-                'summary': summary
-            }
+            return analysis
+            
         except Exception as e:
             self.logger.error(f"Error performing technical analysis for {symbol}: {str(e)}")
             raise

@@ -50,23 +50,24 @@ class TechnicalAnalysis:
             df[col] = pd.to_numeric(df[col], errors='coerce')
 
         # RSI
-        self.indicators['RSI'] = self.calculate_rsi(df['close'])
+        rsi_series = self.calculate_rsi(df['close'])
+        self.indicators['RSI'] = float(rsi_series.iloc[-1])
 
         # MACD
         macd, signal = self.calculate_macd(df['close'])
-        self.indicators['MACD'] = macd
-        self.indicators['MACD_Signal'] = signal
-        self.indicators['MACD_Hist'] = macd - signal
+        self.indicators['MACD'] = float(macd.iloc[-1])
+        self.indicators['MACD_Signal'] = float(signal.iloc[-1])
+        self.indicators['MACD_Hist'] = float(macd.iloc[-1] - signal.iloc[-1])
 
         # Bandes de Bollinger
         bb_upper, bb_middle, bb_lower = self.calculate_bollinger_bands(df['close'])
-        self.indicators['BB_Upper'] = bb_upper
-        self.indicators['BB_Middle'] = bb_middle
-        self.indicators['BB_Lower'] = bb_lower
+        self.indicators['BB_Upper'] = float(bb_upper.iloc[-1])
+        self.indicators['BB_Middle'] = float(bb_middle.iloc[-1])
+        self.indicators['BB_Lower'] = float(bb_lower.iloc[-1])
 
         # Moyennes Mobiles
-        self.indicators['SMA_20'] = self.calculate_sma(df['close'], 20)
-        self.indicators['EMA_20'] = self.calculate_ema(df['close'], 20)
+        self.indicators['SMA_20'] = float(self.calculate_sma(df['close'], 20).iloc[-1])
+        self.indicators['EMA_20'] = float(self.calculate_ema(df['close'], 20).iloc[-1])
 
         return self.indicators
 
@@ -80,88 +81,60 @@ class TechnicalAnalysis:
         signals = {}
         
         # Signal RSI
-        last_rsi = indicators['RSI'].iloc[-1]
-        signals['RSI'] = 'Survente' if last_rsi < 30 else 'Surachat' if last_rsi > 70 else 'Neutre'
+        if indicators['RSI'] < 30:
+            signals['RSI'] = 'Survente'
+        elif indicators['RSI'] > 70:
+            signals['RSI'] = 'Surachat'
+        else:
+            signals['RSI'] = 'Neutre'
 
         # Signal MACD
-        last_macd = indicators['MACD'].iloc[-1]
-        last_signal = indicators['MACD_Signal'].iloc[-1]
-        signals['MACD'] = 'Achat' if last_macd > last_signal else 'Vente'
+        if indicators['MACD'] > indicators['MACD_Signal']:
+            signals['MACD'] = 'Achat'
+        else:
+            signals['MACD'] = 'Vente'
 
         # Signal Bollinger
         last_close = float(df['close'].iloc[-1])
-        last_bb_upper = indicators['BB_Upper'].iloc[-1]
-        last_bb_lower = indicators['BB_Lower'].iloc[-1]
-        if last_close > last_bb_upper:
+        if last_close > indicators['BB_Upper']:
             signals['BB'] = 'Surachat'
-        elif last_close < last_bb_lower:
+        elif last_close < indicators['BB_Lower']:
             signals['BB'] = 'Survente'
         else:
             signals['BB'] = 'Neutre'
 
         # Signal global
-        bullish_signals = sum(1 for signal in signals.values() if signal in ['Achat', 'Survente'])
-        bearish_signals = sum(1 for signal in signals.values() if signal in ['Vente', 'Surachat'])
-        
-        if bullish_signals > bearish_signals:
-            signals['GLOBAL'] = 'Achat'
-        elif bearish_signals > bullish_signals:
-            signals['GLOBAL'] = 'Vente'
-        else:
-            signals['GLOBAL'] = 'Neutre'
+        signals['GLOBAL'] = 'Achat' if signals['MACD'] == 'Achat' and signals['RSI'] == 'Survente' else 'Vente'
 
         return signals
 
-    def get_summary(self, df: pd.DataFrame) -> str:
+    def get_summary(self, df: pd.DataFrame) -> Dict[str, Any]:
         """
-        Génère un résumé détaillé de l'analyse technique
+        Génère un résumé de l'analyse technique
+        :param df: DataFrame avec les données OHLCV
+        :return: Dictionnaire contenant les indicateurs, signaux et résumé
+        """
+        indicators = self.calculate_all(df)
+        signals = self.get_signals(df)
         
-        Args:
-            df (pd.DataFrame): DataFrame avec les données OHLCV
-            
-        Returns:
-            str: Résumé formaté de l'analyse technique
-        """
-        try:
-            signals = self.get_signals(df)
-            indicators = self.indicators  # Utilise les indicateurs déjà calculés
-            
-            summary = []
-            summary.append("=== Résumé de l'analyse technique ===")
-            
-            # Prix actuel et variation
-            try:
-                last_price = float(df['close'].iloc[-1])
-                prev_price = float(df['close'].iloc[-2])
-                price_change = ((last_price - prev_price) / prev_price) * 100
-                summary.append(f"Prix actuel: {last_price:.2f} ({price_change:+.2f}%)")
-            except Exception:
-                summary.append("Prix actuel: Non disponible")
-            
-            # RSI avec valeur numérique
-            last_rsi = indicators['RSI'].iloc[-1]
-            summary.append(f"RSI: {last_rsi:.1f} - {signals['RSI']}")
-
-            # MACD avec valeurs
-            last_macd = indicators['MACD'].iloc[-1]
-            last_signal = indicators['MACD_Signal'].iloc[-1]
-            summary.append(f"MACD: {last_macd:.2f} vs Signal: {last_signal:.2f} - {signals['MACD']}")
-
-            # Bandes de Bollinger avec écart
-            last_bb_upper = indicators['BB_Upper'].iloc[-1]
-            last_bb_lower = indicators['BB_Lower'].iloc[-1]
-            bb_width = ((last_bb_upper - last_bb_lower) / indicators['BB_Middle'].iloc[-1]) * 100
-            summary.append(f"Bandes de Bollinger: {signals['BB']} (Largeur: {bb_width:.1f}%)")
-            
-            # Tendance des moyennes mobiles
-            try:
-                sma_trend = "↑" if indicators['SMA_20'].iloc[-1] > indicators['SMA_20'].iloc[-2] else "↓"
-                ema_trend = "↑" if indicators['EMA_20'].iloc[-1] > indicators['EMA_20'].iloc[-2] else "↓"
-                summary.append(f"Tendance - SMA20: {sma_trend} EMA20: {ema_trend}")
-            except Exception:
-                summary.append("Tendance: Non disponible")
-            
-            return "\n".join(summary)
-            
-        except Exception as e:
-            return f"Erreur lors de la génération du résumé: {str(e)}"
+        # Création du résumé textuel
+        summary = []
+        
+        # Résumé RSI
+        summary.append(f"RSI ({indicators['RSI']:.2f}): {signals['RSI']}")
+        
+        # Résumé MACD
+        summary.append(f"MACD: {signals['MACD']} (MACD: {indicators['MACD']:.2f}, Signal: {indicators['MACD_Signal']:.2f})")
+        
+        # Résumé Bollinger
+        last_close = float(df['close'].iloc[-1])
+        summary.append(f"Bollinger: {signals['BB']} (Prix: {last_close:.2f}, Haut: {indicators['BB_Upper']:.2f}, Bas: {indicators['BB_Lower']:.2f})")
+        
+        # Résumé global
+        summary.append(f"Signal Global: {signals['GLOBAL']}")
+        
+        return {
+            'indicators': indicators,
+            'signals': signals,
+            'summary': '\n'.join(summary)
+        }
