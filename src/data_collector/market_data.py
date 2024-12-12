@@ -77,7 +77,9 @@ class MarketDataCollector:
                 '30m': '30', '1h': '60', '2h': '120', '4h': '240',
                 '6h': '360', '12h': '720', '1d': 'D', '1w': 'W'
             }
-            bybit_interval = interval_map.get(interval, '60')
+            bybit_interval = interval_map.get(interval)
+            if bybit_interval is None:
+                raise ValueError(f"Interval non supporté: {interval}")
             
             klines = self.client.get_kline(
                 category="spot",
@@ -86,9 +88,12 @@ class MarketDataCollector:
                 limit=limit
             )
             
-            # Transform to match Binance format
+            if 'result' not in klines or 'list' not in klines['result']:
+                raise ValueError(f"Format de réponse invalide pour {symbol}")
+            
+            # Transform data to match Binance format exactly
             formatted_klines = []
-            for kline in klines['result']['list']:
+            for kline in reversed(klines['result']['list']):  # Inverser l'ordre pour avoir l'ordre chronologique
                 timestamp = int(kline[0])
                 formatted_kline = [
                     timestamp,                    # timestamp
@@ -97,23 +102,39 @@ class MarketDataCollector:
                     float(kline[3]),             # low
                     float(kline[4]),             # close
                     float(kline[5]),             # volume
-                    timestamp + interval_to_milliseconds(bybit_interval),  # close_time
-                    float(kline[6]),             # quote_asset_volume (turnover)
-                    int(kline[7]) if len(kline) > 7 else 0,  # number_of_trades
-                    0.0,                         # taker_buy_base_asset_volume
-                    0.0,                         # taker_buy_quote_asset_volume
+                    timestamp + interval_to_milliseconds(interval),  # close_time
+                    float(kline[6]),             # quote_asset_volume
+                    int(float(kline[5])),        # number_of_trades (using volume as approximation)
+                    float(kline[5]) * 0.5,       # taker_buy_base_asset_volume (approximation)
+                    float(kline[6]) * 0.5,       # taker_buy_quote_asset_volume (approximation)
                     0                            # ignore
                 ]
                 formatted_klines.append(formatted_kline)
             
+            # Create DataFrame with identical column names as Binance
             df = pd.DataFrame(formatted_klines, columns=[
                 'timestamp', 'open', 'high', 'low', 'close',
                 'volume', 'close_time', 'quote_asset_volume',
                 'number_of_trades', 'taker_buy_base_asset_volume',
                 'taker_buy_quote_asset_volume', 'ignore'
             ])
+            
+            # Convert timestamp to datetime format
             df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
+            df['close_time'] = pd.to_datetime(df['close_time'], unit='ms')
+            
+            # Ensure all numeric columns are float type
+            numeric_columns = ['open', 'high', 'low', 'close', 'volume', 
+                             'quote_asset_volume', 'taker_buy_base_asset_volume', 
+                             'taker_buy_quote_asset_volume']
+            df[numeric_columns] = df[numeric_columns].astype(float)
+            
+            # Ensure number_of_trades is integer
+            df['number_of_trades'] = df['number_of_trades'].astype(int)
+            
+            self.logger.info(f"Retrieved {len(df)} klines for {symbol}")
             return df
+            
         except Exception as e:
             self.logger.error(f"Error fetching klines for {symbol}: {str(e)}")
             raise

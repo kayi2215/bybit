@@ -3,6 +3,7 @@ from src.data_collector.market_data import MarketDataCollector
 from config.config import BYBIT_API_KEY, BYBIT_API_SECRET
 import pandas as pd
 from datetime import datetime
+import numpy as np
 
 class TestMarketDataCollector(unittest.TestCase):
     @classmethod
@@ -22,13 +23,17 @@ class TestMarketDataCollector(unittest.TestCase):
         self.assertIsInstance(price_data['price'], float)
         self.assertGreater(price_data['price'], 0)
         self.assertEqual(price_data['symbol'], self.symbol)
+        self.assertIsInstance(price_data['timestamp'], float)
 
     def test_get_klines(self):
         """Test de la récupération des données historiques"""
-        klines = self.collector.get_klines(self.symbol, '1h', limit=5)
+        interval = '1h'
+        limit = 5
+        klines = self.collector.get_klines(self.symbol, interval, limit=limit)
         
+        # Test de base
         self.assertIsInstance(klines, pd.DataFrame)
-        self.assertEqual(len(klines), 5)
+        self.assertEqual(len(klines), limit)
         
         # Vérifier toutes les colonnes requises
         required_columns = [
@@ -41,9 +46,47 @@ class TestMarketDataCollector(unittest.TestCase):
             self.assertIn(column, klines.columns)
         
         # Vérifier les types de données
-        self.assertIsInstance(klines['timestamp'].iloc[0], pd.Timestamp)
-        self.assertIsInstance(klines['close'].iloc[0], float)
-        self.assertIsInstance(klines['volume'].iloc[0], float)
+        self.assertTrue(pd.api.types.is_datetime64_any_dtype(klines['timestamp']))
+        self.assertTrue(pd.api.types.is_datetime64_any_dtype(klines['close_time']))
+        
+        numeric_columns = [
+            'open', 'high', 'low', 'close', 'volume',
+            'quote_asset_volume', 'taker_buy_base_asset_volume',
+            'taker_buy_quote_asset_volume'
+        ]
+        for column in numeric_columns:
+            self.assertTrue(pd.api.types.is_float_dtype(klines[column]),
+                          f"La colonne {column} devrait être de type float")
+        
+        self.assertTrue(pd.api.types.is_integer_dtype(klines['number_of_trades']),
+                       "La colonne number_of_trades devrait être de type integer")
+        
+        # Vérifier la cohérence des données
+        self.assertTrue(all(klines['high'] >= klines['low']))
+        self.assertTrue(all(klines['high'] >= klines['open']))
+        self.assertTrue(all(klines['high'] >= klines['close']))
+        self.assertTrue(all(klines['volume'] >= 0))
+        self.assertTrue(all(klines['number_of_trades'] >= 0))
+        
+        # Vérifier que les timestamps sont ordonnés
+        self.assertTrue(klines['timestamp'].is_monotonic_increasing)
+        self.assertTrue(klines['close_time'].is_monotonic_increasing)
+
+    def test_interval_conversion(self):
+        """Test des différents intervalles de temps"""
+        intervals = ['1m', '3m', '5m', '15m', '30m', '1h', '2h', '4h', '6h', '12h', '1d', '1w']
+        for interval in intervals:
+            klines = self.collector.get_klines(self.symbol, interval, limit=2)
+            self.assertIsInstance(klines, pd.DataFrame)
+            self.assertGreater(len(klines), 0)
+            
+    def test_error_handling(self):
+        """Test de la gestion des erreurs"""
+        with self.assertRaises(Exception):
+            self.collector.get_klines('INVALID_SYMBOL', '1h')
+            
+        with self.assertRaises(Exception):
+            self.collector.get_klines(self.symbol, 'INVALID_INTERVAL')
 
     def test_get_order_book(self):
         """Test de la récupération du carnet d'ordres"""
