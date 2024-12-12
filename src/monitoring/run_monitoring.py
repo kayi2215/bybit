@@ -19,12 +19,14 @@ class MonitoringService:
         self.monitor = APIMonitor(testnet=testnet)
         self.check_interval = check_interval
         self.running = False
+        self.last_metrics_summary = datetime.now()
+        self.metrics_summary_interval = 300  # 5 minutes
         
         # Configuration des endpoints Bybit à surveiller
         self.endpoints = [
             {
                 "endpoint": "/v5/market/tickers",
-                "method": "get_tickers",
+                "method": "get_ticker",
                 "params": {"category": "spot", "symbol": "BTCUSDT"}
             },
             {
@@ -34,7 +36,7 @@ class MonitoringService:
             },
             {
                 "endpoint": "/v5/market/kline",
-                "method": "get_kline",
+                "method": "get_klines",
                 "params": {"category": "spot", "symbol": "BTCUSDT", "interval": "1", "limit": 100}
             }
         ]
@@ -56,6 +58,14 @@ class MonitoringService:
         ch.setLevel(logging.INFO)
         ch.setFormatter(formatter)
         self.logger.addHandler(ch)
+        
+        # Handler pour le fichier
+        log_dir = os.path.join(os.path.dirname(__file__), '..', '..', 'logs')
+        os.makedirs(log_dir, exist_ok=True)
+        fh = logging.FileHandler(os.path.join(log_dir, 'monitoring_service.log'))
+        fh.setLevel(logging.INFO)
+        fh.setFormatter(formatter)
+        self.logger.addHandler(fh)
 
     def signal_handler(self, signum, frame):
         """Gestionnaire pour l'arrêt propre du service"""
@@ -70,6 +80,34 @@ class MonitoringService:
             return True
         return False
 
+    def should_print_metrics_summary(self) -> bool:
+        """Vérifie si on doit afficher le résumé des métriques"""
+        now = datetime.now()
+        if (now - self.last_metrics_summary).total_seconds() >= self.metrics_summary_interval:
+            self.last_metrics_summary = now
+            return True
+        return False
+
+    def check_alerts(self):
+        """Vérifie et affiche les alertes actives"""
+        alerts = self.monitor.get_alerts()
+        if alerts:
+            self.logger.warning("=== Alertes Actives ===")
+            for alert in alerts:
+                self.logger.warning(f"Type: {alert['type']}, Valeur: {alert['value']}")
+
+    def print_metrics_summary(self):
+        """Affiche un résumé des métriques"""
+        summary = self.monitor.get_metrics_summary()
+        self.logger.info("\n=== Résumé des Métriques ===")
+        self.logger.info(f"Requêtes totales: {summary['total_requests']}")
+        self.logger.info(f"Requêtes échouées: {summary['failed_requests']}")
+        self.logger.info(f"Taux d'erreur: {summary['error_rate']:.2%}")
+        if 'avg_latency' in summary:
+            self.logger.info(f"Latence moyenne: {summary['avg_latency']:.2f}ms")
+            self.logger.info(f"Latence min: {summary['min_latency']:.2f}ms")
+            self.logger.info(f"Latence max: {summary['max_latency']:.2f}ms")
+
     def run(self):
         """Lance le service de monitoring en continu"""
         self.running = True
@@ -82,47 +120,54 @@ class MonitoringService:
         
         while self.running:
             try:
+                # Vérification de la disponibilité générale de l'API
+                if not self.monitor.check_availability():
+                    self.logger.error("L'API Bybit n'est pas disponible!")
+                    time.sleep(self.check_interval)
+                    continue
+
+                # Vérification des endpoints
                 for endpoint_config in self.endpoints:
                     endpoint = endpoint_config["endpoint"]
                     if self.should_check_endpoint(endpoint):
                         self.logger.info(f"Vérification de l'endpoint: {endpoint}")
                         
-                        # Monitoring de l'endpoint
-                        self.monitor.monitor_endpoint(
+                        # Mesure de la latence
+                        latency = self.monitor.measure_latency(
                             endpoint=endpoint,
                             method=endpoint_config["method"],
                             **endpoint_config["params"]
                         )
                         
+                        if latency is not None:
+                            self.logger.info(f"Latence pour {endpoint}: {latency:.2f}ms")
+                        
                         # Vérification des limites de taux
                         rate_limits = self.monitor.check_rate_limits()
                         if rate_limits.get('status') == 'CRITICAL':
-                            self.logger.warning("Attention: Limites de taux critiques!")
+                            self.logger.warning(f"Attention: Utilisation des limites de taux à {rate_limits.get('usage_percent', 0):.1f}%")
                 
-                # Obtenir et logger le résumé des métriques
-                summary = self.monitor.get_metrics_summary()
-                if summary:
-                    self.logger.info(f"Résumé des métriques: {summary}")
+                # Vérification des alertes
+                self.check_alerts()
+                
+                # Affichage périodique du résumé des métriques
+                if self.should_print_metrics_summary():
+                    self.print_metrics_summary()
                 
                 time.sleep(1)  # Petite pause pour éviter une utilisation excessive du CPU
                 
             except Exception as e:
-                self.logger.error(f"Erreur dans la boucle de monitoring: {str(e)}")
-                time.sleep(5)  # Attendre un peu plus longtemps en cas d'erreur
+                self.logger.error(f"Erreur dans le service de monitoring: {str(e)}")
+                time.sleep(self.check_interval)
 
 def main():
-    # Charger les variables d'environnement
-    load_dotenv()
+    """Point d'entrée principal"""
+    # Paramètres par défaut
+    check_interval = int(os.getenv('MONITORING_INTERVAL', '60'))  # 60 secondes par défaut
+    testnet = os.getenv('USE_TESTNET', 'true').lower() == 'true'  # Testnet par défaut
     
-    # Détecter l'environnement
-    use_testnet = os.getenv('USE_TESTNET', 'False').lower() == 'true'
-    check_interval = int(os.getenv('MONITOR_CHECK_INTERVAL', '60'))
-    
-    # Créer et démarrer le service
-    service = MonitoringService(
-        check_interval=check_interval,
-        testnet=use_testnet
-    )
+    # Création et démarrage du service
+    service = MonitoringService(check_interval=check_interval, testnet=testnet)
     service.run()
 
 if __name__ == "__main__":
