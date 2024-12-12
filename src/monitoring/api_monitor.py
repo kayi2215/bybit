@@ -272,3 +272,35 @@ class APIMonitor:
             })
         
         return summary
+
+    def check_api_health(self) -> Dict:
+        """Vérifie la santé globale de l'API"""
+        health_status = {
+            'status': 'OK',
+            'latency': None,
+            'availability': False,
+            'rate_limits': {},
+            'alerts': [],
+            'timestamp': datetime.now().isoformat()
+        }
+        
+        # Vérifier la disponibilité
+        health_status['availability'] = self.check_availability()
+        
+        # Mesurer la latence
+        latency = self.measure_latency("/v5/market/tickers", "get_ticker", category="spot", symbol="BTCUSDT")
+        health_status['latency'] = latency
+        
+        # Vérifier les limites de taux
+        health_status['rate_limits'] = self.check_rate_limits()
+        
+        # Récupérer les alertes actives
+        health_status['alerts'] = self.get_alerts()
+        
+        # Déterminer le statut global
+        if not health_status['availability']:
+            health_status['status'] = 'CRITICAL'
+        elif health_status['alerts']:
+            health_status['status'] = 'WARNING'
+        
+        return health_status

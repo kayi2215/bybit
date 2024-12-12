@@ -9,8 +9,8 @@ class TestTradingBotIntegration(unittest.TestCase):
     def setUp(self):
         """Initialisation avant chaque test"""
         self.symbols = ["BTCUSDT", "ETHUSDT"]
-        self.bot = TradingBot(symbols=self.symbols)
         self.db = MongoDBManager()
+        self.bot = TradingBot(symbols=self.symbols, db=self.db)
         
         # Nettoyer les données de test précédentes
         self.cleanup_test_data()
@@ -19,6 +19,7 @@ class TestTradingBotIntegration(unittest.TestCase):
         """Nettoyage après chaque test"""
         if hasattr(self, 'bot') and self.bot.is_running:
             self.bot.stop()
+            time.sleep(1)  # Attendre que les threads se terminent
         self.cleanup_test_data()
         
         # Fermer la connexion MongoDB
@@ -38,18 +39,26 @@ class TestTradingBotIntegration(unittest.TestCase):
         """Insère des données de test dans MongoDB"""
         for symbol in self.symbols:
             market_data = {
-                "price": 50000.0 if symbol == "BTCUSDT" else 2000.0,
-                "volume": 100.0,
-                "timestamp": datetime.now().timestamp()
+                "symbol": symbol,
+                "data": {
+                    "price": 50000.0 if symbol == "BTCUSDT" else 2000.0,
+                    "volume": 100.0,
+                    "timestamp": datetime.now().timestamp()
+                },
+                "test": True
             }
             self.db.store_market_data(symbol, market_data)
 
             indicators = {
-                "rsi": 65.5,
-                "macd": {
-                    "value": 100.0,
-                    "signal": 95.0
-                }
+                "symbol": symbol,
+                "indicators": {
+                    "rsi": 65.5,
+                    "macd": {
+                        "value": 100.0,
+                        "signal": 95.0
+                    }
+                },
+                "test": True
             }
             self.db.store_indicators(symbol, indicators)
 
@@ -90,22 +99,33 @@ class TestTradingBotIntegration(unittest.TestCase):
         for symbol in self.symbols:
             market_data = self.db.get_latest_market_data(symbol)
             self.assertIsNotNone(market_data)
-            self.assertEqual(market_data["symbol"], symbol)
+            if isinstance(market_data, list):
+                self.assertTrue(len(market_data) > 0)
+                market_data = market_data[0]
+            self.assertIn('symbol', market_data)
+            self.assertEqual(market_data['symbol'], symbol)
             
             indicators = self.db.get_latest_indicators(symbol)
             self.assertIsNotNone(indicators)
-            self.assertEqual(indicators["symbol"], symbol)
+            if isinstance(indicators, list):
+                self.assertTrue(len(indicators) > 0)
+                indicators = indicators[0]
+            self.assertIn('symbol', indicators)
+            self.assertEqual(indicators['symbol'], symbol)
 
-    @patch('src.services.market_updater.MarketDataUpdater._update_loop')
+    @patch('src.services.market_updater.MarketUpdater.update_market_data')
     def test_market_data_updates(self, mock_update):
         """Teste les mises à jour des données de marché"""
+        # Configurer le mock pour retourner True (succès)
+        mock_update.return_value = True
+        
         # Démarrer le bot
         self.bot.start()
         
-        # Attendre que le bot démarre
-        time.sleep(1)
+        # Attendre que le bot démarre et commence à mettre à jour les données
+        time.sleep(2)
         
-        # Vérifier que la méthode de mise à jour est appelée
+        # Vérifier que la méthode de mise à jour est appelée au moins une fois
         self.assertTrue(mock_update.called)
         
         # Arrêter le bot

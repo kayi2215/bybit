@@ -204,3 +204,35 @@ class MarketDataCollector:
         except Exception as e:
             self.logger.error(f"Error performing market analysis for {symbol}: {str(e)}")
             raise
+
+    def get_ticker(self, symbol: str) -> Dict[str, Any]:
+        """
+        Récupère les données du ticker pour un symbole
+        
+        Args:
+            symbol: Le symbole (ex: BTCUSDT)
+            
+        Returns:
+            Dict contenant les données du ticker
+        """
+        try:
+            response = self.client.get_tickers(
+                category="spot",
+                symbol=symbol
+            )
+            
+            if response['retCode'] == 0 and response['result']['list']:
+                ticker_data = response['result']['list'][0]
+                return {
+                    'symbol': symbol,
+                    'price': float(ticker_data['lastPrice']),
+                    'volume': float(ticker_data['volume24h']),
+                    'timestamp': datetime.now().timestamp()
+                }
+            else:
+                self.logger.error(f"Erreur lors de la récupération du ticker pour {symbol}: {response}")
+                return None
+                
+        except Exception as e:
+            self.logger.error(f"Erreur lors de la récupération du ticker pour {symbol}: {str(e)}")
+            return None

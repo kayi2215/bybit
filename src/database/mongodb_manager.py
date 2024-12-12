@@ -9,17 +9,21 @@ from dotenv import load_dotenv
 import time
 
 class MongoDBManager:
-    def __init__(self):
-        """Initialise la connexion à MongoDB"""
-        load_dotenv()
+    def __init__(self, uri=None):
+        """
+        Initialise le gestionnaire MongoDB
+        :param uri: URI de connexion MongoDB (optionnel)
+        """
+        if uri is None:
+            load_dotenv()
+            mongodb_user = os.getenv('MONGO_ROOT_USER', 'admin')
+            mongodb_password = os.getenv('MONGO_ROOT_PASSWORD', 'secure_password')
+            mongodb_database = os.getenv('MONGODB_DATABASE', 'trading_db')
+            mongodb_uri = f"mongodb://{mongodb_user}:{mongodb_password}@localhost:27017/"
+            uri = mongodb_uri
         
         # Configuration du logging
         self.logger = logging.getLogger(__name__)
-        
-        # Get MongoDB credentials from environment variables
-        mongodb_user = os.getenv('MONGO_ROOT_USER', 'admin')
-        mongodb_password = os.getenv('MONGO_ROOT_PASSWORD', 'secure_password')
-        mongodb_database = os.getenv('MONGODB_DATABASE', 'trading_db')
         
         # Collections names from environment variables
         market_data_collection = os.getenv('MONGODB_COLLECTION_MARKET_DATA', 'market_data')
@@ -28,29 +32,8 @@ class MongoDBManager:
         monitoring_collection = os.getenv('MONGODB_COLLECTION_MONITORING', 'monitoring')
         api_metrics_collection = os.getenv('MONGODB_COLLECTION_API_METRICS', 'api_metrics')
         
-        # Construction de l'URI MongoDB avec les identifiants
-        mongodb_uri = f"mongodb://{mongodb_user}:{mongodb_password}@localhost:27017/"
-        
-        # Connexion à MongoDB avec retry logic
-        max_retries = 3
-        retry_count = 0
-        while retry_count < max_retries:
-            try:
-                self.client = MongoClient(mongodb_uri, serverSelectionTimeoutMS=5000)
-                # Test de la connexion
-                self.client.admin.command('ping')
-                self.logger.info("Successfully connected to MongoDB")
-                break
-            except Exception as e:
-                retry_count += 1
-                if retry_count == max_retries:
-                    self.logger.error(f"Failed to connect to MongoDB after {max_retries} attempts: {str(e)}")
-                    raise
-                self.logger.warning(f"Failed to connect to MongoDB (attempt {retry_count}): {str(e)}")
-                time.sleep(1)  # Wait before retrying
-        
-        # Sélection de la base de données
-        self.db: Database = self.client[mongodb_database]
+        self.client = MongoClient(uri)
+        self.db = self.client[mongodb_database]
         
         # Collections
         self.market_data: Collection = self.db[market_data_collection]
@@ -92,6 +75,21 @@ class MongoDBManager:
         # Index pour api_metrics
         self.api_metrics.create_index([("timestamp", DESCENDING)])
         self.api_metrics.create_index([("endpoint", ASCENDING), ("metric_type", ASCENDING), ("timestamp", DESCENDING)])
+
+    def __enter__(self):
+        """Support du gestionnaire de contexte"""
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        """Ferme la connexion à la sortie du contexte"""
+        self.close()
+        return False  # Ne pas supprimer l'exception si elle existe
+
+    def close(self):
+        """Ferme la connexion MongoDB"""
+        if hasattr(self, 'client'):
+            self.client.close()
+            self.logger.info("MongoDB connection closed")
 
     def store_market_data(self, symbol: str, data: Dict[str, Any]):
         """
@@ -505,9 +503,3 @@ class MongoDBManager:
         except Exception as e:
             self.logger.error(f"Error cleaning up old data: {str(e)}")
             raise
-
-    def close(self):
-        """Ferme la connexion MongoDB"""
-        if hasattr(self, 'client'):
-            self.client.close()
-            self.logger.info("MongoDB connection closed")

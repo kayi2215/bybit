@@ -18,9 +18,11 @@ class MonitoringService:
         load_dotenv()
         self.monitor = APIMonitor(testnet=testnet)
         self.check_interval = check_interval
+        self.stop_event = threading.Event()
         self.running = False
         self.last_metrics_summary = datetime.now()
         self.metrics_summary_interval = 300  # 5 minutes
+        self.shutdown_complete = threading.Event()  # Nouvel événement pour la synchronisation
         
         # Configuration des endpoints Bybit à surveiller
         self.endpoints = [
@@ -70,7 +72,7 @@ class MonitoringService:
     def signal_handler(self, signum, frame):
         """Gestionnaire pour l'arrêt propre du service"""
         self.logger.info("\nArrêt du service de monitoring Bybit...")
-        self.running = False
+        self.stop()
 
     def should_check_endpoint(self, endpoint: str) -> bool:
         """Vérifie si un endpoint doit être testé en fonction de son dernier check"""
@@ -111,14 +113,12 @@ class MonitoringService:
     def run(self):
         """Lance le service de monitoring en continu"""
         self.running = True
-        
-        # Configuration du gestionnaire de signal pour Ctrl+C
-        signal.signal(signal.SIGINT, self.signal_handler)
+        self.shutdown_complete.clear()  # Réinitialiser l'événement de fin
         
         self.logger.info(f"Service de monitoring Bybit démarré - Intervalle de vérification: {self.check_interval}s")
         self.logger.info("Appuyez sur Ctrl+C pour arrêter le service")
         
-        while self.running:
+        while not self.stop_event.wait(1):  # Attendre 1 seconde ou jusqu'à ce que stop_event soit set
             try:
                 # Vérification de la disponibilité générale de l'API
                 if not self.monitor.check_availability():
@@ -128,6 +128,9 @@ class MonitoringService:
 
                 # Vérification des endpoints
                 for endpoint_config in self.endpoints:
+                    if self.stop_event.is_set():  # Vérifier si on doit s'arrêter
+                        break
+                    
                     endpoint = endpoint_config["endpoint"]
                     if self.should_check_endpoint(endpoint):
                         self.logger.info(f"Vérification de l'endpoint: {endpoint}")
@@ -147,6 +150,9 @@ class MonitoringService:
                         if rate_limits.get('status') == 'CRITICAL':
                             self.logger.warning(f"Attention: Utilisation des limites de taux à {rate_limits.get('usage_percent', 0):.1f}%")
                 
+                if self.stop_event.is_set():  # Vérifier si on doit s'arrêter
+                    break
+                
                 # Vérification des alertes
                 self.check_alerts()
                 
@@ -154,11 +160,20 @@ class MonitoringService:
                 if self.should_print_metrics_summary():
                     self.print_metrics_summary()
                 
-                time.sleep(1)  # Petite pause pour éviter une utilisation excessive du CPU
-                
             except Exception as e:
                 self.logger.error(f"Erreur dans le service de monitoring: {str(e)}")
                 time.sleep(self.check_interval)
+        
+        self.running = False
+        self.logger.info("Service de monitoring arrêté")
+        self.shutdown_complete.set()  # Signaler que l'arrêt est terminé
+
+    def stop(self):
+        """Arrête le service de monitoring"""
+        self.logger.info("Arrêt du service de monitoring Bybit...")
+        self.stop_event.set()
+        # Attendre que le service soit complètement arrêté (timeout de 10 secondes)
+        self.shutdown_complete.wait(timeout=10)
 
 def main():
     """Point d'entrée principal"""
@@ -166,8 +181,16 @@ def main():
     check_interval = int(os.getenv('MONITORING_INTERVAL', '60'))  # 60 secondes par défaut
     testnet = os.getenv('USE_TESTNET', 'true').lower() == 'true'  # Testnet par défaut
     
-    # Création et démarrage du service
+    # Création du service
     service = MonitoringService(check_interval=check_interval, testnet=testnet)
+    
+    # Configuration du gestionnaire de signal dans le thread principal
+    def signal_handler(signum, frame):
+        service.stop()
+    
+    signal.signal(signal.SIGINT, signal_handler)
+    
+    # Démarrage du service
     service.run()
 
 if __name__ == "__main__":
