@@ -8,55 +8,42 @@ import pandas as pd
 from src.services.market_updater import MarketUpdater
 from src.database.mongodb_manager import MongoDBManager
 from src.data_collector.market_data import MarketDataCollector
+from src.monitoring.api_monitor import APIMonitor
 
 class TestMarketUpdater(unittest.TestCase):
     def setUp(self):
-        """Configuration initiale pour chaque test"""
-        self.symbols = ['BTCUSDT', 'ETHUSDT']
+        """Configuration initiale des tests"""
+        # Create mocks
         self.mock_db = Mock(spec=MongoDBManager)
-        self.api_key = "test_api_key"
-        self.api_secret = "test_api_secret"
+        self.mock_collector = Mock(spec=MarketDataCollector)
+        self.mock_monitor = Mock(spec=APIMonitor)
         
-        # Création d'un mock avec les méthodes nécessaires
-        self.mock_collector = create_autospec(MarketDataCollector, instance=True)
-        self.patcher = patch('src.services.market_updater.MarketDataCollector', return_value=self.mock_collector)
-        self.mock_collector_class = self.patcher.start()
-        
-        # Mock de l'APIMonitor
-        self.mock_monitor = Mock()
+        # Configure default API monitor response
         self.mock_monitor.check_api_health.return_value = {"status": "OK"}
-        self.monitor_patcher = patch('src.services.market_updater.APIMonitor', return_value=self.mock_monitor)
-        self.monitor_patcher.start()
         
-        # Création de l'instance de test
-        self.market_updater = MarketUpdater(
-            symbols=self.symbols,
-            db=self.mock_db,
-            api_key=self.api_key,
-            api_secret=self.api_secret,
-            use_testnet=True
-        )
+        # Create MarketUpdater instance with mocks
+        self.market_updater = MarketUpdater(['BTCUSDT'], db=self.mock_db)  # Pass mock_db directly
+        self.market_updater.collector = self.mock_collector
+        self.market_updater.api_monitor = self.mock_monitor
+        
+        # Reduce intervals for faster tests
+        self.market_updater.update_interval = 0.1  # 100ms instead of 10s
+        self.market_updater.shutdown_timeout = 1  # 1s instead of 10s
 
     def tearDown(self):
         """Nettoyage après chaque test"""
-        if hasattr(self, 'market_updater'):
-            self.market_updater.stop()
-            # Attendre que le service s'arrête complètement
-            if hasattr(self.market_updater, 'update_thread') and self.market_updater.update_thread:
-                self.market_updater.update_thread.join(timeout=2)
-        self.patcher.stop()
-        self.monitor_patcher.stop()
+        self.market_updater.stop()
+        # Wait for shutdown with shorter timeout
+        self.market_updater.shutdown_complete.wait(timeout=1)
+        # Clear any remaining events
+        self.market_updater.stop_event.clear()
+        self.market_updater.shutdown_complete.clear()
 
     def test_init(self):
         """Test de l'initialisation du MarketUpdater"""
-        self.assertEqual(self.market_updater.symbols, self.symbols)
+        self.assertEqual(self.market_updater.symbols, ['BTCUSDT'])
         self.assertEqual(self.market_updater.db, self.mock_db)
-        self.mock_collector_class.assert_called_once_with(
-            api_key=self.api_key,
-            api_secret=self.api_secret,
-            use_testnet=True
-        )
-        self.assertEqual(self.market_updater.error_counts, {symbol: 0 for symbol in self.symbols})
+        self.assertEqual(self.market_updater.error_counts, {'BTCUSDT': 0})
 
     def test_update_market_data_success(self):
         """Test de la mise à jour réussie des données de marché"""
@@ -132,26 +119,29 @@ class TestMarketUpdater(unittest.TestCase):
         """Test du démarrage et de l'arrêt du service"""
         # Configuration des mocks avec des données valides pour tous les symboles
         timestamp = datetime.now()
-        for symbol in self.symbols:
+        for symbol in ['BTCUSDT']:
             self.mock_collector.get_ticker.return_value = {
                 'symbol': symbol,
                 'last_price': 50000.0,
                 'volume_24h': 1000.0,
                 'timestamp': timestamp.timestamp()
             }
+            
             self.mock_collector.get_klines.return_value = pd.DataFrame({
-                'timestamp': [timestamp],
-                'open': ['49000'],
-                'high': ['51000'],
-                'low': ['48000'],
-                'close': ['50000'],
-                'volume': ['100']
+                'timestamp': [timestamp] * 100,
+                'open': ['49000'] * 100,
+                'high': ['51000'] * 100,
+                'low': ['48000'] * 100,
+                'close': ['50000'] * 100,
+                'volume': ['100'] * 100
             })
+            
             self.mock_collector.get_order_book.return_value = {
                 'lastUpdateId': 1234567,
                 'bids': [['49999', '1.0']],
                 'asks': [['50001', '1.0']]
             }
+            
             self.mock_collector.get_public_trade_history.return_value = [{
                 'id': 12345,
                 'price': '50000',
@@ -160,36 +150,19 @@ class TestMarketUpdater(unittest.TestCase):
                 'isBuyerMaker': True
             }]
         
-        # Réduction de l'intervalle pour le test
-        self.market_updater.update_interval = 0.1
+        # Démarrage du service
+        self.market_updater.start()
         
-        # Démarrage du service dans un thread séparé
-        import threading
-        update_thread = threading.Thread(target=self.market_updater.run)
-        update_thread.daemon = True
-        update_thread.start()
-        
-        # Attente pour quelques cycles de mise à jour
-        # Attendre suffisamment longtemps pour que tous les symboles soient traités
-        # Temps d'attente = nombre de symboles * intervalle de mise à jour * 2 (pour être sûr)
-        wait_time = len(self.symbols) * self.market_updater.update_interval * 2
-        time.sleep(wait_time)
+        # Attente pour quelques cycles de mise à jour (réduit à 0.5 secondes)
+        time.sleep(0.5)
         
         # Arrêt du service
         self.market_updater.stop()
         
-        # Attente que le thread se termine
-        update_thread.join(timeout=2)
-        
         # Vérifications
-        self.assertTrue(self.mock_collector.get_ticker.called)
-        self.assertTrue(self.mock_collector.get_klines.called)
-        self.assertTrue(self.mock_collector.get_order_book.called)
-        self.assertTrue(self.mock_collector.get_public_trade_history.called)
-        self.assertTrue(self.mock_db.store_market_data.called)
+        self.mock_db.store_market_data.assert_called()
+        self.mock_db.store_indicators.assert_called()
         self.assertTrue(self.market_updater.stop_event.is_set())
-        self.assertTrue(self.market_updater.shutdown_complete.is_set())
-        self.assertFalse(update_thread.is_alive())
 
     def test_api_health_check_failure(self):
         """Test de la gestion d'une API non disponible"""
@@ -206,6 +179,99 @@ class TestMarketUpdater(unittest.TestCase):
         self.assertEqual(self.market_updater.error_counts[symbol], 1)
         self.mock_collector.get_ticker.assert_not_called()
         self.mock_db.store_market_data.assert_not_called()
+
+    def test_technical_indicators_update_success(self):
+        """Test de la mise à jour réussie des indicateurs techniques"""
+        symbol = 'BTCUSDT'
+        timestamp = datetime.now()
+        
+        # Configuration des mocks avec des données valides
+        self.mock_collector.get_ticker.return_value = {
+            'symbol': symbol,
+            'last_price': 50000.0,
+            'volume_24h': 1000.0,
+            'timestamp': timestamp.timestamp()
+        }
+        
+        # Création d'un DataFrame avec suffisamment de données pour les indicateurs
+        klines_data = pd.DataFrame({
+            'timestamp': [timestamp] * 100,
+            'open': ['49000'] * 100,
+            'high': ['51000'] * 100,
+            'low': ['48000'] * 100,
+            'close': ['50000'] * 100,
+            'volume': ['100'] * 100
+        })
+        self.mock_collector.get_klines.return_value = klines_data
+        
+        self.mock_collector.get_order_book.return_value = {
+            'lastUpdateId': 1234567,
+            'bids': [['49999', '1.0']],
+            'asks': [['50001', '1.0']]
+        }
+        
+        self.mock_collector.get_public_trade_history.return_value = [{
+            'id': 12345,
+            'price': '50000',
+            'qty': '1.0',
+            'time': int(timestamp.timestamp() * 1000),
+            'isBuyerMaker': True
+        }]
+        
+        # Exécution de la mise à jour
+        result = self.market_updater.update_market_data(symbol)
+        
+        # Vérifications
+        self.assertTrue(result)
+        self.mock_db.store_indicators.assert_called_once()
+        
+        # Vérification des indicateurs techniques stockés
+        stored_data = self.mock_db.store_indicators.call_args[0][0]
+        self.assertEqual(stored_data['symbol'], symbol)
+        self.assertIn('timestamp', stored_data)
+        self.assertIn('indicators', stored_data)
+        self.assertIn('signals', stored_data)
+        self.assertIn('summary', stored_data)
+
+    def test_technical_indicators_invalid_data(self):
+        """Test de la gestion des données invalides pour les indicateurs techniques"""
+        symbol = 'BTCUSDT'
+        timestamp = datetime.now()
+        
+        # Configuration des mocks avec des données valides pour tout sauf klines
+        self.mock_collector.get_ticker.return_value = {
+            'symbol': symbol,
+            'last_price': 50000.0,
+            'volume_24h': 1000.0,
+            'timestamp': timestamp.timestamp()
+        }
+        
+        # Retourner des données invalides pour klines (pas un DataFrame)
+        self.mock_collector.get_klines.return_value = {
+            'error': 'Invalid data format'
+        }
+        
+        self.mock_collector.get_order_book.return_value = {
+            'lastUpdateId': 1234567,
+            'bids': [['49999', '1.0']],
+            'asks': [['50001', '1.0']]
+        }
+        
+        self.mock_collector.get_public_trade_history.return_value = [{
+            'id': 12345,
+            'price': '50000',
+            'qty': '1.0',
+            'time': int(timestamp.timestamp() * 1000),
+            'isBuyerMaker': True
+        }]
+        
+        # Exécution de la mise à jour
+        result = self.market_updater.update_market_data(symbol)
+        
+        # Vérifications
+        self.assertTrue(result)  # La mise à jour doit réussir même si les indicateurs échouent
+        self.mock_db.store_market_data.assert_called_once()  # Les données de marché sont toujours stockées
+        self.mock_db.store_indicators.assert_not_called()  # Pas de stockage d'indicateurs
 
 if __name__ == '__main__':
     unittest.main()

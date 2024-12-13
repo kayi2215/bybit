@@ -36,18 +36,36 @@ class MongoDBManager:
         self.db = self.client[mongodb_database]
         
         # Collections
-        self.market_data: Collection = self.db[market_data_collection]
-        self.indicators: Collection = self.db[indicators_collection]
-        self.trades: Collection = self.db[trades_collection]
-        self.backtest_results: Collection = self.db['backtest_results']
-        self.strategy_config: Collection = self.db['strategy_config']
-        self.monitoring: Collection = self.db[monitoring_collection]
-        self.api_metrics: Collection = self.db[api_metrics_collection]
+        self.market_data = self.db[market_data_collection]
+        self.indicators = self.db[indicators_collection]
+        self.trades = self.db[trades_collection]
+        self.backtest_results = self.db['backtest_results']
+        self.strategy_config = self.db['strategy_config']
+        self.monitoring = self.db[monitoring_collection]
+        self.api_metrics = self.db[api_metrics_collection]
         
         # Création des index
         self._setup_indexes()
         
         self.logger.info("MongoDB Manager initialized")
+
+    def close(self):
+        """Ferme proprement la connexion à MongoDB"""
+        if hasattr(self, 'client'):
+            try:
+                self.client.close()
+                self.logger.info("MongoDB connection closed")
+            except Exception as e:
+                self.logger.error(f"Error closing MongoDB connection: {str(e)}")
+            finally:
+                del self.client
+                
+    def __enter__(self):
+        return self
+        
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        self.close()
+        return False  # Don't suppress exceptions
 
     def _setup_indexes(self):
         """Configure les index pour optimiser les requêtes"""
@@ -75,21 +93,6 @@ class MongoDBManager:
         # Index pour api_metrics
         self.api_metrics.create_index([("timestamp", DESCENDING)])
         self.api_metrics.create_index([("endpoint", ASCENDING), ("metric_type", ASCENDING), ("timestamp", DESCENDING)])
-
-    def __enter__(self):
-        """Support du gestionnaire de contexte"""
-        return self
-
-    def __exit__(self, exc_type, exc_val, exc_tb):
-        """Ferme la connexion à la sortie du contexte"""
-        self.close()
-        return False  # Ne pas supprimer l'exception si elle existe
-
-    def close(self):
-        """Ferme la connexion MongoDB"""
-        if hasattr(self, 'client'):
-            self.client.close()
-            self.logger.info("MongoDB connection closed")
 
     def store_market_data(self, symbol: str, data: Dict[str, Any]):
         """
