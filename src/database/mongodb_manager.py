@@ -96,11 +96,22 @@ class MongoDBManager:
 
     def store_market_data(self, symbol: str, data: Dict[str, Any]):
         """
-        Stocke les données de marché
+        Stocke les données de marché dans MongoDB
         :param symbol: Symbole de la paire de trading
         :param data: Données à stocker
         """
         try:
+            if not hasattr(self, 'client') or self.client is None:
+                self.logger.error("MongoDB client not available")
+                return
+                
+            # Vérifier si le client est toujours utilisable
+            try:
+                self.client.admin.command('ping')
+            except Exception:
+                self.logger.error("MongoDB connection lost")
+                return
+                
             document = {
                 "symbol": symbol,
                 "timestamp": datetime.now(),
@@ -114,11 +125,22 @@ class MongoDBManager:
 
     def store_indicators(self, symbol: str, indicators: Dict[str, Any]):
         """
-        Stocke les indicateurs techniques
+        Stocke les indicateurs techniques dans MongoDB
         :param symbol: Symbole de la paire de trading
         :param indicators: Indicateurs à stocker
         """
         try:
+            if not hasattr(self, 'client') or self.client is None:
+                self.logger.error("MongoDB client not available")
+                return
+                
+            # Vérifier si le client est toujours utilisable
+            try:
+                self.client.admin.command('ping')
+            except Exception:
+                self.logger.error("MongoDB connection lost")
+                return
+                
             document = {
                 "symbol": symbol,
                 "timestamp": datetime.now(),
@@ -136,6 +158,17 @@ class MongoDBManager:
         :param trade_data: Données de la transaction
         """
         try:
+            if not hasattr(self, 'client') or self.client is None:
+                self.logger.error("MongoDB client not available")
+                return
+                
+            # Vérifier si le client est toujours utilisable
+            try:
+                self.client.admin.command('ping')
+            except Exception:
+                self.logger.error("MongoDB connection lost")
+                return
+                
             trade_data["timestamp"] = datetime.now()
             self.trades.insert_one(trade_data)
             self.logger.info(f"Stored trade for {trade_data.get('symbol')}")
@@ -150,6 +183,17 @@ class MongoDBManager:
         :param result: Résultat du backtest
         """
         try:
+            if not hasattr(self, 'client') or self.client is None:
+                self.logger.error("MongoDB client not available")
+                return
+                
+            # Vérifier si le client est toujours utilisable
+            try:
+                self.client.admin.command('ping')
+            except Exception:
+                self.logger.error("MongoDB connection lost")
+                return
+                
             document = {
                 "strategy_name": strategy_name,
                 "timestamp": datetime.now(),
@@ -168,6 +212,17 @@ class MongoDBManager:
         :param config: Configuration de la stratégie
         """
         try:
+            if not hasattr(self, 'client') or self.client is None:
+                self.logger.error("MongoDB client not available")
+                return
+                
+            # Vérifier si le client est toujours utilisable
+            try:
+                self.client.admin.command('ping')
+            except Exception:
+                self.logger.error("MongoDB connection lost")
+                return
+                
             document = {
                 "strategy_name": strategy_name,
                 "config": config
@@ -184,6 +239,17 @@ class MongoDBManager:
         :param data_list: Liste des données à stocker
         """
         try:
+            if not hasattr(self, 'client') or self.client is None:
+                self.logger.error("MongoDB client not available")
+                return
+                
+            # Vérifier si le client est toujours utilisable
+            try:
+                self.client.admin.command('ping')
+            except Exception:
+                self.logger.error("MongoDB connection lost")
+                return
+                
             if not data_list:
                 return
             
@@ -213,6 +279,17 @@ class MongoDBManager:
         :param indicators_list: Liste des indicateurs à stocker
         """
         try:
+            if not hasattr(self, 'client') or self.client is None:
+                self.logger.error("MongoDB client not available")
+                return
+                
+            # Vérifier si le client est toujours utilisable
+            try:
+                self.client.admin.command('ping')
+            except Exception:
+                self.logger.error("MongoDB connection lost")
+                return
+                
             if not indicators_list:
                 return
             
@@ -244,6 +321,17 @@ class MongoDBManager:
         :param value: Valeur de la métrique
         """
         try:
+            if not hasattr(self, 'client') or self.client is None:
+                self.logger.error("MongoDB client not available")
+                return
+                
+            # Vérifier si le client est toujours utilisable
+            try:
+                self.client.admin.command('ping')
+            except Exception:
+                self.logger.error("MongoDB connection lost")
+                return
+                
             document = {
                 "endpoint": endpoint,
                 "metric_type": metric_type,
@@ -264,6 +352,17 @@ class MongoDBManager:
         :param details: Détails de l'événement
         """
         try:
+            if not hasattr(self, 'client') or self.client is None:
+                self.logger.error("MongoDB client not available")
+                return
+                
+            # Vérifier si le client est toujours utilisable
+            try:
+                self.client.admin.command('ping')
+            except Exception:
+                self.logger.error("MongoDB connection lost")
+                return
+                
             document = {
                 "endpoint": endpoint,
                 "event_type": event_type,
@@ -284,6 +383,17 @@ class MongoDBManager:
         :return: Liste des données de marché
         """
         try:
+            if not hasattr(self, 'client') or self.client is None:
+                self.logger.error("MongoDB client not available")
+                return []
+                
+            # Vérifier si le client est toujours utilisable
+            try:
+                self.client.admin.command('ping')
+            except Exception:
+                self.logger.error("MongoDB connection lost")
+                return []
+            
             cursor = self.market_data.find(
                 {"symbol": symbol}
             ).sort("timestamp", DESCENDING).limit(limit)
@@ -300,6 +410,17 @@ class MongoDBManager:
         :return: Liste des indicateurs
         """
         try:
+            if not hasattr(self, 'client') or self.client is None:
+                self.logger.error("MongoDB client not available")
+                return []
+                
+            # Vérifier si le client est toujours utilisable
+            try:
+                self.client.admin.command('ping')
+            except Exception:
+                self.logger.error("MongoDB connection lost")
+                return []
+            
             cursor = self.indicators.find(
                 {"symbol": symbol}
             ).sort("timestamp", DESCENDING).limit(limit)
@@ -316,6 +437,17 @@ class MongoDBManager:
         :return: Liste des transactions
         """
         try:
+            if not hasattr(self, 'client') or self.client is None:
+                self.logger.error("MongoDB client not available")
+                return []
+                
+            # Vérifier si le client est toujours utilisable
+            try:
+                self.client.admin.command('ping')
+            except Exception:
+                self.logger.error("MongoDB connection lost")
+                return []
+            
             if end_time is None:
                 end_time = datetime.now()
             
@@ -337,6 +469,17 @@ class MongoDBManager:
         :param data: Données de monitoring à stocker
         """
         try:
+            if not hasattr(self, 'client') or self.client is None:
+                self.logger.error("MongoDB client not available")
+                return
+                
+            # Vérifier si le client est toujours utilisable
+            try:
+                self.client.admin.command('ping')
+            except Exception:
+                self.logger.error("MongoDB connection lost")
+                return
+                
             data["timestamp"] = datetime.now()
             self.monitoring.insert_one(data)
             self.logger.debug("Stored monitoring data")
@@ -352,6 +495,17 @@ class MongoDBManager:
         :return: Liste des données de monitoring
         """
         try:
+            if not hasattr(self, 'client') or self.client is None:
+                self.logger.error("MongoDB client not available")
+                return []
+                
+            # Vérifier si le client est toujours utilisable
+            try:
+                self.client.admin.command('ping')
+            except Exception:
+                self.logger.error("MongoDB connection lost")
+                return []
+            
             if end_time is None:
                 end_time = datetime.now()
             
@@ -373,6 +527,17 @@ class MongoDBManager:
         :param metric_data: Données de la métrique à stocker
         """
         try:
+            if not hasattr(self, 'client') or self.client is None:
+                self.logger.error("MongoDB client not available")
+                return
+                
+            # Vérifier si le client est toujours utilisable
+            try:
+                self.client.admin.command('ping')
+            except Exception:
+                self.logger.error("MongoDB connection lost")
+                return
+                
             metric_data["timestamp"] = datetime.now()
             self.api_metrics.insert_one(metric_data)
             self.logger.debug(f"Stored API metric for {metric_data.get('endpoint')}")
@@ -391,6 +556,17 @@ class MongoDBManager:
         :return: Liste des métriques d'API
         """
         try:
+            if not hasattr(self, 'client') or self.client is None:
+                self.logger.error("MongoDB client not available")
+                return []
+                
+            # Vérifier si le client est toujours utilisable
+            try:
+                self.client.admin.command('ping')
+            except Exception:
+                self.logger.error("MongoDB connection lost")
+                return []
+            
             query = {}
             if endpoint:
                 query["endpoint"] = endpoint
@@ -418,6 +594,17 @@ class MongoDBManager:
         :return: Liste des données historiques
         """
         try:
+            if not hasattr(self, 'client') or self.client is None:
+                self.logger.error("MongoDB client not available")
+                return []
+                
+            # Vérifier si le client est toujours utilisable
+            try:
+                self.client.admin.command('ping')
+            except Exception:
+                self.logger.error("MongoDB connection lost")
+                return []
+            
             query = {
                 "symbol": symbol,
                 "timestamp": {
@@ -437,6 +624,17 @@ class MongoDBManager:
         :return: Liste des résultats des backtests
         """
         try:
+            if not hasattr(self, 'client') or self.client is None:
+                self.logger.error("MongoDB client not available")
+                return []
+                
+            # Vérifier si le client est toujours utilisable
+            try:
+                self.client.admin.command('ping')
+            except Exception:
+                self.logger.error("MongoDB connection lost")
+                return []
+            
             return list(self.backtest_results.find({"strategy_name": strategy_name}).sort("timestamp", DESCENDING))
         except Exception as e:
             self.logger.error(f"Error retrieving backtest results: {str(e)}")
@@ -449,6 +647,17 @@ class MongoDBManager:
         :return: Configuration de la stratégie
         """
         try:
+            if not hasattr(self, 'client') or self.client is None:
+                self.logger.error("MongoDB client not available")
+                return None
+                
+            # Vérifier si le client est toujours utilisable
+            try:
+                self.client.admin.command('ping')
+            except Exception:
+                self.logger.error("MongoDB connection lost")
+                return None
+            
             return self.strategy_config.find_one({"strategy_name": strategy_name})
         except Exception as e:
             self.logger.error(f"Error retrieving strategy config: {str(e)}")
@@ -462,6 +671,17 @@ class MongoDBManager:
         :return: Liste des transactions
         """
         try:
+            if not hasattr(self, 'client') or self.client is None:
+                self.logger.error("MongoDB client not available")
+                return []
+                
+            # Vérifier si le client est toujours utilisable
+            try:
+                self.client.admin.command('ping')
+            except Exception:
+                self.logger.error("MongoDB connection lost")
+                return []
+            
             query = {"symbol": symbol} if symbol else {}
             return list(self.trades.find(query).sort("timestamp", DESCENDING).limit(limit))
         except Exception as e:
@@ -474,6 +694,17 @@ class MongoDBManager:
         :param days_to_keep: Nombre de jours de données à conserver
         """
         try:
+            if not hasattr(self, 'client') or self.client is None:
+                self.logger.error("MongoDB client not available")
+                return
+                
+            # Vérifier si le client est toujours utilisable
+            try:
+                self.client.admin.command('ping')
+            except Exception:
+                self.logger.error("MongoDB connection lost")
+                return
+            
             cutoff_date = datetime.now() - timedelta(days=days_to_keep)
             
             # Nettoyer les données de marché

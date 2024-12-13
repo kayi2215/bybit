@@ -117,13 +117,13 @@ class MarketUpdater:
             }
 
             # Sauvegarde des données de marché
-            self.db.store_market_data(market_data)
+            self.db.store_market_data(symbol=symbol, data=market_data)
 
             # Sauvegarde des indicateurs techniques s'ils sont disponibles
             if technical_data and not self.stop_event.is_set():
                 technical_data['symbol'] = symbol
                 technical_data['timestamp'] = datetime.now()
-                self.db.store_indicators(technical_data)
+                self.db.store_indicators(symbol=symbol, indicators=technical_data)
                 self.logger.info(f"Indicateurs techniques mis à jour pour {symbol}")
 
             # Réinitialisation du compteur d'erreurs
@@ -190,18 +190,20 @@ class MarketUpdater:
         return True
 
     def stop(self):
-        """Arrête proprement le service de mise à jour"""
-        if self.update_thread is None or not self.update_thread.is_alive():
-            return True
-            
+        """Arrête le service de mise à jour"""
         self.logger.info("Demande d'arrêt du service de mise à jour")
         self.stop_event.set()
-        self.shutdown_queue.put("shutdown")
         
-        # Attente de l'arrêt complet avec timeout configurable
-        shutdown_success = self.shutdown_complete.wait(timeout=self.shutdown_timeout)
-        if not shutdown_success:
-            self.logger.warning("Le service de mise à jour ne s'est pas arrêté dans le délai imparti")
-            self.update_thread = None
-            
-        return shutdown_success
+        # Vérifier si le thread existe et est démarré avant d'essayer de le joindre
+        if hasattr(self, 'update_thread') and self.update_thread is not None:
+            try:
+                self.update_thread.join(timeout=10)  # Attendre max 10 secondes
+                if self.update_thread.is_alive():
+                    self.logger.warning("Le thread de mise à jour ne s'est pas arrêté dans le délai imparti")
+            except Exception as e:
+                self.logger.error(f"Erreur lors de l'arrêt du thread: {str(e)}")
+        
+        # Nettoyer la référence au thread
+        self.update_thread = None
+        
+        self.logger.info("Arrêt du service de mise à jour des données")
