@@ -24,7 +24,7 @@ class APIMonitor:
             'rate_limit_threshold': 0.8  # 80% de la limite d'utilisation
         }
         self.consecutive_failures = 0
-        self.testnet = False
+        self.testnet = testnet
         self.exchange = "bybit"
         
         # Initialiser les compteurs de requêtes
@@ -39,7 +39,7 @@ class APIMonitor:
         # Initialiser le client Bybit
         if self.api_key and self.api_secret:
             self.client = HTTP(
-                testnet=False,
+                testnet=self.testnet,
                 api_key=self.api_key,
                 api_secret=self.api_secret
             )
