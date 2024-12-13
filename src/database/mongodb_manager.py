@@ -375,32 +375,38 @@ class MongoDBManager:
             self.logger.error(f"Error storing monitoring event: {str(e)}")
             raise
 
-    def get_latest_market_data(self, symbol: str, limit: int = 1) -> List[Dict[str, Any]]:
+    def get_latest_market_data(self, symbol: str) -> Dict:
         """
-        Récupère les dernières données de marché pour un symbole
-        :param symbol: Symbole de la paire de trading
-        :param limit: Nombre de documents à récupérer
-        :return: Liste des données de marché
+        Récupère les dernières données de marché pour un symbole donné
         """
         try:
-            if not hasattr(self, 'client') or self.client is None:
-                self.logger.error("MongoDB client not available")
-                return []
-                
-            # Vérifier si le client est toujours utilisable
-            try:
-                self.client.admin.command('ping')
-            except Exception:
-                self.logger.error("MongoDB connection lost")
-                return []
+            # Récupérer le document le plus récent pour ce symbole
+            result = self.market_data.find_one(
+                {"symbol": symbol},
+                sort=[("timestamp", -1)]
+            )
             
-            cursor = self.market_data.find(
-                {"symbol": symbol}
-            ).sort("timestamp", DESCENDING).limit(limit)
-            return list(cursor)
+            if result and 'data' in result:
+                if 'ticker' in result['data']:
+                    # Format avec ticker
+                    return {
+                        'symbol': symbol,
+                        'price': result['data']['ticker']['price'],
+                        'timestamp': result['timestamp']
+                    }
+                else:
+                    # Format direct
+                    return {
+                        'symbol': symbol,
+                        'price': result['data'].get('price'),
+                        'timestamp': result['timestamp']
+                    }
+            
+            return result
+            
         except Exception as e:
-            self.logger.error(f"Error retrieving market data: {str(e)}")
-            raise
+            self.logger.error(f"Erreur lors de la récupération des données pour {symbol}: {str(e)}")
+            return None
 
     def get_latest_indicators(self, symbol: str, limit: int = 1) -> List[Dict[str, Any]]:
         """

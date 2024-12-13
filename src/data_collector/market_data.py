@@ -32,15 +32,27 @@ class MarketDataCollector:
         """
         load_dotenv()
         
+        if not api_key or not api_secret:
+            raise ValueError("Les clés API sont requises")
+            
+        self.logger = logging.getLogger(__name__)
+        self._setup_logging()
+        
         # Initialize Bybit client
         self.client = HTTP(
             testnet=use_testnet,
             api_key=api_key,
             api_secret=api_secret
         )
-        self.logger = logging.getLogger(__name__)
-        self._setup_logging()
         
+        # Test de connexion
+        try:
+            self.test_connection()
+            self.logger.info("Connexion à l'API Bybit établie avec succès")
+        except Exception as e:
+            self.logger.error(f"Échec de la connexion à l'API Bybit: {str(e)}")
+            raise
+            
         if use_testnet:
             self.logger.info("Using Bybit Testnet")
             
@@ -52,21 +64,67 @@ class MarketDataCollector:
             format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
         )
 
-    def get_current_price(self, symbol: str) -> Dict[str, float]:
+    def test_connection(self):
+        """Test la connexion à l'API en récupérant le temps serveur"""
         try:
-            ticker = self.client.get_tickers(
-                category="spot",
-                symbol=symbol
-            )
-            price = float(ticker['result']['list'][0]['lastPrice'])
-            self.logger.info(f"Retrieved price for {symbol}: {price}")
-            return {
-                'symbol': symbol,
-                'price': price,
-                'timestamp': datetime.now().timestamp()
-            }
+            self.client.get_server_time()
+            return True
         except Exception as e:
-            self.logger.error(f"Error fetching price for {symbol}: {str(e)}")
+            self.logger.error(f"Erreur lors du test de connexion: {str(e)}")
+            raise
+
+    def get_current_price(self, symbol: str) -> Dict[str, float]:
+        """
+        Récupère le prix actuel d'un symbole, essaie d'abord en spot puis en linear si nécessaire
+        """
+        try:
+            # Essayer d'abord en spot
+            try:
+                self.logger.info(f"Tentative de récupération du prix spot pour {symbol}")
+                response = self.client.get_tickers(
+                    category="spot",
+                    symbol=symbol
+                )
+                self.logger.info(f"Réponse brute de l'API spot: {response}")
+                
+                if not response.get('result') or not response['result'].get('list'):
+                    self.logger.warning(f"Pas de données dans la réponse spot pour {symbol}")
+                    raise ValueError("Pas de données dans la réponse de l'API spot")
+                
+                price = float(response['result']['list'][0]['lastPrice'])
+                self.logger.info(f"Prix spot trouvé pour {symbol}: {price}")
+                return {
+                    'symbol': symbol,
+                    'price': price,
+                    'timestamp': datetime.now().timestamp(),
+                    'category': 'spot'
+                }
+            except Exception as spot_error:
+                self.logger.warning(f"Erreur lors de la récupération du prix spot pour {symbol}: {str(spot_error)}")
+                
+                # Essayer en linear (perpetual futures)
+                self.logger.info(f"Tentative de récupération du prix linear pour {symbol}")
+                response = self.client.get_tickers(
+                    category="linear",
+                    symbol=symbol
+                )
+                self.logger.info(f"Réponse brute de l'API linear: {response}")
+                
+                if not response.get('result') or not response['result'].get('list'):
+                    self.logger.warning(f"Pas de données dans la réponse linear pour {symbol}")
+                    raise ValueError("Pas de données dans la réponse de l'API linear")
+                
+                price = float(response['result']['list'][0]['lastPrice'])
+                self.logger.info(f"Prix linear trouvé pour {symbol}: {price}")
+                return {
+                    'symbol': symbol,
+                    'price': price,
+                    'timestamp': datetime.now().timestamp(),
+                    'category': 'linear'
+                }
+        except Exception as e:
+            self.logger.error(f"Échec de la récupération du prix pour {symbol} (spot et linear): {str(e)}")
+            self.logger.error(f"Détails de la configuration - Testnet: {self.client.testnet}")
             raise
 
     def get_klines(self, symbol: str, interval: str, limit: int = 100) -> pd.DataFrame:

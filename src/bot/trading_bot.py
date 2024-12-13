@@ -15,6 +15,13 @@ class TradingBot:
         # Configuration du logging
         self.setup_logging()
         
+        # Vérification des clés API
+        if not BYBIT_API_KEY or not BYBIT_API_SECRET:
+            self.logger.error("Les clés API Bybit ne sont pas configurées dans le fichier .env")
+            raise ValueError("Les clés API Bybit sont requises. Veuillez configurer le fichier .env")
+        
+        self.logger.info("Vérification des clés API Bybit...")
+        
         # Liste des symboles à trader
         self.symbols = symbols or ["BTCUSDT"]
         
@@ -83,10 +90,50 @@ class TradingBot:
 
                 for symbol in self.symbols:
                     try:
+                        self.logger.info(f"Tentative de récupération des données pour {symbol}")
                         # Récupération des dernières données depuis MongoDB
                         market_data = self.db.get_latest_market_data(symbol)
+                        price = None
+                        
                         if not market_data:
-                            self.logger.warning(f"Pas de données récentes pour {symbol}")
+                            self.logger.info(f"Pas de données en base pour {symbol}, tentative de récupération directe via API")
+                            try:
+                                current_data = self.market_data.get_current_price(symbol)
+                                self.logger.info(f"Données reçues de l'API pour {symbol}: {current_data}")
+                                price = current_data.get('price')
+                                if price:
+                                    self.logger.info(f"Prix récupéré directement de l'API pour {symbol}: {price}")
+                                    # Stocker les données dans MongoDB pour les prochaines fois
+                                    try:
+                                        self.db.store_market_data(symbol, current_data)
+                                        self.logger.info(f"Données stockées en base pour {symbol}")
+                                    except Exception as db_error:
+                                        self.logger.error(f"Erreur lors du stockage des données pour {symbol}: {str(db_error)}")
+                                else:
+                                    self.logger.warning(f"Prix non disponible pour {symbol} dans la réponse API")
+                            except Exception as e:
+                                self.logger.error(f"Erreur lors de la récupération du prix pour {symbol}: {str(e)}")
+                                self.logger.debug("Détails de l'erreur:", exc_info=True)
+                                continue
+                        else:
+                            self.logger.info(f"Données trouvées en base pour {symbol}")
+                            # Extraction du prix depuis les données MongoDB
+                            if isinstance(market_data, dict):
+                                if 'data' in market_data and isinstance(market_data['data'], dict):
+                                    if 'ticker' in market_data['data']:
+                                        price = market_data['data']['ticker'].get('price')
+                                    else:
+                                        price = market_data['data'].get('price')
+                                else:
+                                    price = market_data.get('price')
+                            
+                            if price:
+                                self.logger.info(f"Prix extrait des données MongoDB: {price}")
+                            else:
+                                self.logger.warning(f"Structure de données inattendue: {market_data}")
+                        
+                        if price is None:
+                            self.logger.warning(f"Prix non trouvé dans les données pour {symbol}")
                             continue
 
                         # Récupération des derniers indicateurs
@@ -94,19 +141,6 @@ class TradingBot:
                         
                         # Log des informations importantes
                         self.logger.info(f"Symbole: {symbol}")
-                        
-                        # Extraction du prix selon le format des données
-                        price = None
-                        if isinstance(market_data, dict):
-                            if 'data' in market_data and isinstance(market_data['data'], dict):
-                                price = market_data['data'].get('price')
-                            elif 'price' in market_data:
-                                price = market_data['price']
-                        elif isinstance(market_data, list) and market_data:
-                            if 'data' in market_data[0]:
-                                price = market_data[0]['data'].get('price')
-                            else:
-                                price = market_data[0].get('price')
                         
                         if price is not None:
                             self.logger.info(f"Prix actuel: {price} USDT")
