@@ -147,7 +147,7 @@ class MarketDataCollector:
             self.logger.error(f"Error fetching order book for {symbol}: {str(e)}")
             raise
 
-    def get_recent_trades(self, symbol: str, limit: int = 100) -> List[Dict[str, Any]]:
+    def get_public_trade_history(self, symbol: str, limit: int = 100) -> List[Dict[str, Any]]:
         """
         Récupère les transactions récentes pour un symbole
         :param symbol: Symbole de la paire de trading (ex: 'BTCUSDT')
@@ -155,7 +155,7 @@ class MarketDataCollector:
         :return: Liste des transactions récentes
         """
         try:
-            trades = self.client.get_public_trading_history(
+            trades = self.client.get_public_trade_history(
                 category="spot",
                 symbol=symbol,
                 limit=limit
