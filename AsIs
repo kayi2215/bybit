@@ -1,0 +1,42 @@
+Voici ce qui se passe exactement lorsque vous lancez main.py :
+
+Initialisation :
+Le script crée une instance de TradingBot
+Lors de l'initialisation, le bot :
+Configure le logging
+Se connecte à MongoDB
+Initialise le MarketDataCollector
+Crée une instance de MarketUpdater
+Configure le MonitoringService
+Démarrage (bot.start()) :
+Lance deux threads principaux :
+Thread de monitoring via start_monitoring()
+Surveille l'état du système
+Vérifie la santé de l'API
+Gère les alertes
+Thread de trading via start_trading()
+Lance la boucle principale de trading
+Pour chaque symbole configuré :
+Appelle _process_symbol()
+Vérifie si une mise à jour est nécessaire
+Coordonne avec MarketUpdater pour les mises à jour
+MarketUpdater :
+Démarre son propre thread via start()
+Gère les mises à jour périodiques des données
+Maintient un dictionnaire last_update pour éviter les mises à jour trop fréquentes
+Compte les erreurs par symbole
+Gestion de l'arrêt :
+Si Ctrl+C est pressé (KeyboardInterrupt) :
+Le bot commence un arrêt gracieux
+Arrête les threads de trading et monitoring
+Attend que MarketUpdater termine proprement
+Ferme les connexions à la base de données
+Gestion des erreurs :
+Toute exception non gérée est capturée dans le bloc try/except
+L'erreur est affichée avec un message explicatif
+En résumé, le bot démarre trois threads principaux (monitoring, trading, et market updater) qui travaillent de manière coordonnée pour :
+
+Collecter les données de marché
+Éviter les mises à jour redondantes
+Surveiller la santé du système
+Gérer proprement les erreurs et l'arrêt
