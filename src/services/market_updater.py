@@ -79,6 +79,51 @@ class MarketUpdater:
         # Dictionnaire pour suivre les erreurs par symbole
         self.error_counts: Dict[str, int] = {symbol: 0 for symbol in symbols}
 
+    def _validate_advanced_indicators(self, indicators: dict) -> bool:
+        """
+        Valide les indicateurs avancés
+        
+        Args:
+            indicators: Dictionnaire des indicateurs à valider
+            
+        Returns:
+            bool: True si les indicateurs sont valides, False sinon
+        """
+        try:
+            # Validation du MACD
+            if 'MACD' in indicators:
+                macd = indicators['MACD']
+                if not isinstance(macd, dict) or not all(k in macd for k in ['value', 'signal', 'histogram']):
+                    self.logger.warning("Format MACD invalide")
+                    return False
+            
+            # Validation de l'ADX
+            if 'ADX' in indicators:
+                adx = indicators['ADX']
+                if not isinstance(adx, (int, float)) or adx < 0 or adx > 100:
+                    self.logger.warning("Valeur ADX invalide")
+                    return False
+            
+            # Validation de l'ATR
+            if 'ATR' in indicators:
+                atr = indicators['ATR']
+                if not isinstance(atr, (int, float)) or atr is None or atr < 0:
+                    self.logger.warning("Valeur ATR invalide")
+                    return False
+            
+            # Validation du SuperTrend
+            if 'SuperTrend' in indicators:
+                supertrend = indicators['SuperTrend']
+                if not isinstance(supertrend, dict) or not all(k in supertrend for k in ['value', 'direction']):
+                    self.logger.warning("Format SuperTrend invalide")
+                    return False
+            
+            return True
+            
+        except Exception as e:
+            self.logger.error(f"Erreur lors de la validation des indicateurs: {str(e)}")
+            return False
+
     def _update_market_data(self, symbol: str) -> bool:
         """Met à jour les données de marché pour un symbole donné"""
         try:
@@ -131,23 +176,26 @@ class MarketUpdater:
                 return False
 
             # Préparer et sauvegarder les indicateurs avancés
-            advanced_data = {
-                'symbol': symbol,
-                'timestamp': analysis['timestamp'],
-                'type': 'advanced',
-                'data': {
-                    'indicators': analysis['advanced_analysis']['indicators'],
-                    'signals': analysis['advanced_analysis']['signals']
+            if self._validate_advanced_indicators(analysis['advanced_analysis']['indicators']):
+                advanced_data = {
+                    'symbol': symbol,
+                    'timestamp': analysis['timestamp'],
+                    'type': 'advanced',
+                    'data': {
+                        'indicators': analysis['advanced_analysis']['indicators'],
+                        'signals': analysis['advanced_analysis']['signals']
+                    }
                 }
-            }
 
-            try:
-                self.db.save_advanced_indicators(market_data_id, advanced_data)
-            except Exception as e:
-                self.logger.error(f"Erreur lors de la sauvegarde des indicateurs avancés pour {symbol}: {str(e)}")
-                # Ne pas échouer si les indicateurs avancés échouent
-                pass
-
+                try:
+                    self.db.save_advanced_indicators(market_data_id, advanced_data)
+                except Exception as e:
+                    self.logger.error(f"Erreur lors de la sauvegarde des indicateurs avancés pour {symbol}: {str(e)}")
+                    # Ne pas échouer si les indicateurs avancés échouent
+                    pass
+            else:
+                self.logger.warning(f"Les indicateurs avancés pour {symbol} n'ont pas passé la validation")
+            
             # Mettre à jour le timestamp et réinitialiser les erreurs
             self.last_update[symbol] = current_time
             self.error_counts[symbol] = 0

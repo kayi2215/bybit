@@ -170,10 +170,10 @@ class MongoDBManager:
             # Vérifier et nettoyer le cache si nécessaire
             self._cleanup_cache()
             
+            # Valider les données de marché
+            self._validate_market_data(data)
+            
             # Continuer avec la sauvegarde normale
-            if not all(k in data for k in ['symbol', 'timestamp', 'basic_analysis']):
-                raise ValueError("Données de marché incomplètes")
-
             document = {
                 'symbol': data['symbol'],
                 'timestamp': data['timestamp'],
@@ -198,6 +198,9 @@ class MongoDBManager:
         Sauvegarde les indicateurs avancés liés aux données de marché
         """
         try:
+            # Valider les données d'indicateurs
+            self._validate_indicators(data)
+            
             if not all(k in data for k in ['symbol', 'timestamp', 'type', 'data']):
                 raise ValueError("Données d'indicateurs incomplètes")
 
@@ -292,6 +295,9 @@ class MongoDBManager:
             if not all(k in data for k in ['symbol', 'timestamp', 'data']):
                 raise ValueError("Missing required fields in market data")
             
+            # Valider les données de marché
+            self._validate_market_data(data)
+            
             # Insérer les données
             self.market_data.insert_one(data)
             self.logger.debug(f"Stored market data for {data['symbol']}")
@@ -300,19 +306,31 @@ class MongoDBManager:
             self.logger.error(f"Error storing market data: {str(e)}")
             raise
 
-    def store_indicators(self, symbol: str, indicators: Dict[str, Any]):
+    def store_indicators(self, symbol_or_data, indicators=None):
         """
-        Stocke les indicateurs pour un symbole donné
+        Stocke les indicateurs pour un symbole donné.
+        Supporte deux formats:
+        1. store_indicators(symbol, indicators)
+        2. store_indicators(data)
         """
         try:
-            document = {
-                'symbol': symbol,
-                'timestamp': datetime.now(tz.utc),
-                'indicators': indicators,  # Stocker directement sous 'indicators'
-                'created_at': datetime.now(tz.utc)
-            }
-            
+            if indicators is None:
+                # Format: store_indicators(data)
+                data = symbol_or_data
+                self._validate_indicators(data)
+                document = data
+            else:
+                # Format: store_indicators(symbol, indicators)
+                document = {
+                    'symbol': symbol_or_data,
+                    'timestamp': datetime.now(tz.utc),
+                    'type': 'technical',
+                    'data': indicators
+                }
+                self._validate_indicators(document)
+                
             self.indicators.insert_one(document)
+            self.logger.debug(f"Stored indicators for {document['symbol']}")
             
         except Exception as e:
             self.logger.error(f"Erreur lors du stockage des indicateurs: {str(e)}")
@@ -489,6 +507,9 @@ class MongoDBManager:
                 if not isinstance(data, dict) or 'symbol' not in data or 'data' not in data:
                     raise ValueError("Invalid market data format")
                 
+                # Valider les données de marché
+                self._validate_market_data(data)
+                
                 document = {
                     "symbol": data['symbol'],
                     "timestamp": datetime.now(tz.utc),
@@ -523,22 +544,26 @@ class MongoDBManager:
             if not indicators_list:
                 return
             
-            # Validate and prepare documents
-            documents = []
+            documents_to_insert = []
             for indicator_data in indicators_list:
-                if not isinstance(indicator_data, dict) or 'symbol' not in indicator_data or 'indicators' not in indicator_data:
-                    raise ValueError("Invalid indicator data format")
+                # Convertir au nouveau format si nécessaire
+                if 'indicators' in indicator_data:
+                    document = {
+                        'symbol': indicator_data['symbol'],
+                        'timestamp': datetime.now(tz.utc),
+                        'type': 'technical',
+                        'data': indicator_data['indicators']
+                    }
+                else:
+                    document = indicator_data
                 
-                document = {
-                    "symbol": indicator_data['symbol'],
-                    "timestamp": datetime.now(tz.utc),
-                    "indicators": indicator_data['indicators']
-                }
-                documents.append(document)
+                self._validate_indicators(document)
+                documents_to_insert.append(document)
             
-            # Insert documents in bulk
-            result = self.indicators.insert_many(documents)
-            self.logger.info(f"Stored {len(result.inserted_ids)} indicator documents")
+            if documents_to_insert:
+                self.indicators.insert_many(documents_to_insert)
+                self.logger.debug(f"Stored {len(documents_to_insert)} indicators in bulk")
+            
         except Exception as e:
             self.logger.error(f"Error storing indicators in bulk: {str(e)}")
             raise
@@ -944,3 +969,122 @@ class MongoDBManager:
         except Exception as e:
             self.logger.error(f"Erreur lors du nettoyage des données: {str(e)}")
             raise
+
+    def _validate_market_data(self, data):
+        """Valide les données de marché avant leur stockage"""
+        # Vérification des champs requis de base
+        if not all(k in data for k in ['symbol', 'timestamp', 'data']):
+            raise ValueError("Missing required fields in market data")
+            
+        # Validation des types de base
+        if not isinstance(data['symbol'], str):
+            raise ValueError("Le symbole doit être une chaîne de caractères")
+        if not isinstance(data['timestamp'], datetime):
+            raise ValueError("Le timestamp doit être un objet datetime")
+            
+        # Validation du timestamp
+        current_time = datetime.now(tz.utc)
+        if data['timestamp'] > current_time:
+            raise ValueError("Le timestamp ne peut pas être dans le futur")
+        if data['timestamp'] < current_time - timedelta(days=365):
+            raise ValueError("Le timestamp est trop ancien")
+            
+        # Validation du format du symbole
+        if not self._is_valid_symbol_format(data['symbol']):
+            raise ValueError("Format de symbole invalide")
+            
+        # Si les données sont présentes, valider leur format
+        if 'data' in data and isinstance(data['data'], dict):
+            market_data = data['data']
+            
+            # Support pour le format OHLCV
+            if all(k in market_data for k in ['open', 'high', 'low', 'close', 'volume']):
+                numeric_fields = ['open', 'high', 'low', 'close', 'volume']
+                for field in numeric_fields:
+                    if not isinstance(market_data[field], (int, float)):
+                        raise ValueError(f"{field} doit être un nombre")
+                    if field == 'volume' and market_data[field] < 0:
+                        raise ValueError("Le volume ne peut pas être négatif")
+                        
+                # Validation de la cohérence des prix
+                if not (market_data['low'] <= market_data['open'] <= market_data['high'] and 
+                        market_data['low'] <= market_data['close'] <= market_data['high']):
+                    raise ValueError("Incohérence dans les prix (low, high, open, close)")
+                    
+            # Support pour le format ticker
+            elif 'ticker' in market_data and isinstance(market_data['ticker'], dict):
+                if 'price' not in market_data['ticker']:
+                    raise ValueError("Le champ 'price' est requis dans ticker")
+                if not isinstance(market_data['ticker']['price'], (int, float)):
+                    raise ValueError("Le prix doit être un nombre")
+                    
+            # Support pour le format price simple
+            elif 'price' in market_data:
+                if not isinstance(market_data['price'], (int, float)):
+                    raise ValueError("Le prix doit être un nombre")
+            else:
+                raise ValueError("Format de données de marché non reconnu")
+                
+    def _validate_indicators(self, data):
+        """Valide les données d'indicateurs avant leur stockage"""
+        # Support pour l'ancien format
+        if 'indicators' in data:
+            indicators_data = data['indicators']
+            if not isinstance(indicators_data, dict):
+                raise ValueError("Les indicateurs doivent être un dictionnaire")
+            
+            # Validation des indicateurs dans l'ancien format
+            if 'rsi' in indicators_data:
+                if not isinstance(indicators_data['rsi'], (int, float)):
+                    raise ValueError("RSI doit être un nombre")
+                if not 0 <= indicators_data['rsi'] <= 100:
+                    raise ValueError("RSI doit être entre 0 et 100")
+            
+            if 'macd' in indicators_data:
+                if not isinstance(indicators_data['macd'], (int, float, dict)):
+                    raise ValueError("MACD doit être un nombre ou un dictionnaire")
+                if isinstance(indicators_data['macd'], dict):
+                    if not any(k in indicators_data['macd'] for k in [
+                        'histogram', 'signal', 'macd',  # Format standard
+                        'value', 'signal'  # Format alternatif
+                    ]):
+                        raise ValueError("Format MACD invalide")
+            return
+            
+        # Vérification des champs requis de base
+        if not all(k in data for k in ['symbol', 'timestamp', 'type', 'data']):
+            raise ValueError("Données d'indicateurs incomplètes")
+            
+        # Validation des types de base
+        if not isinstance(data['symbol'], str):
+            raise ValueError("Le symbole doit être une chaîne de caractères")
+        if not isinstance(data['timestamp'], datetime):
+            raise ValueError("Le timestamp doit être un objet datetime")
+            
+        # Si les données sont présentes, valider leur format
+        if 'data' in data and isinstance(data['data'], dict):
+            indicators_data = data['data']
+            
+            # Validation des indicateurs spécifiques
+            if 'rsi' in indicators_data:
+                if not isinstance(indicators_data['rsi'], (int, float)):
+                    raise ValueError("RSI doit être un nombre")
+                if not 0 <= indicators_data['rsi'] <= 100:
+                    raise ValueError("RSI doit être entre 0 et 100")
+                    
+            if 'macd' in indicators_data:
+                if not isinstance(indicators_data['macd'], (int, float, dict)):
+                    raise ValueError("MACD doit être un nombre ou un dictionnaire")
+                if isinstance(indicators_data['macd'], dict):
+                    if not any(k in indicators_data['macd'] for k in [
+                        'histogram', 'signal', 'macd',  # Format standard
+                        'value', 'signal'  # Format alternatif
+                    ]):
+                        raise ValueError("Format MACD invalide")
+                    
+    def _is_valid_symbol_format(self, symbol):
+        """Vérifie si le format du symbole est valide"""
+        if not symbol or not isinstance(symbol, str):
+            return False
+        # Vérifie le format attendu (par exemple: BTCUSDT, ETHUSDT, etc.)
+        return symbol.isalnum() and len(symbol) >= 5

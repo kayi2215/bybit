@@ -563,5 +563,137 @@ class TestMongoDBManager(unittest.TestCase):
             self.assertIn("supertrend", entry["indicators"])
             self.assertIn("volume_profile", entry["indicators"])
 
+class TestMongoDBManagerDataValidation(unittest.TestCase):
+    def setUp(self):
+        """Configuration initiale pour chaque test"""
+        self.mongodb_manager = MongoDBManager()
+        # Nettoyage des collections avant chaque test
+        self.mongodb_manager.market_data.delete_many({})
+        self.mongodb_manager.indicators.delete_many({})
+        
+    def test_market_data_validation(self):
+        """Test la validation des données de marché"""
+        # Test avec des données valides
+        valid_data = {
+            'symbol': 'BTCUSDT',
+            'timestamp': datetime.now(tz.utc),
+            'data': {
+                'open': 50000.0,
+                'high': 51000.0,
+                'low': 49000.0,
+                'close': 50500.0,
+                'volume': 100.0
+            }
+        }
+        self.mongodb_manager.store_market_data(valid_data)
+        
+        # Test avec des types invalides
+        invalid_type_data = {
+            'symbol': 123,  # Devrait être une chaîne
+            'timestamp': "2024-01-01",  # Devrait être un datetime
+            'data': {
+                'open': "50000",  # Devrait être un float
+                'high': None,
+                'low': None,
+                'close': None,
+                'volume': -1  # Volume ne peut pas être négatif
+            }
+        }
+        with self.assertRaises(ValueError):
+            self.mongodb_manager.store_market_data(invalid_type_data)
+            
+    def test_indicators_validation(self):
+        """Test la validation des indicateurs"""
+        # Test avec des indicateurs valides
+        valid_indicators = {
+            'timestamp': datetime.now(tz.utc),
+            'symbol': 'BTCUSDT',
+            'type': 'technical',
+            'data': {
+                'rsi': 65.5,
+                'macd': {'histogram': 0.5, 'signal': 0.3, 'macd': 0.8}
+            }
+        }
+        self.mongodb_manager.store_indicators(valid_indicators)
+        
+        # Test avec des valeurs hors limites
+        invalid_range_indicators = {
+            'timestamp': datetime.now(tz.utc),
+            'symbol': 'BTCUSDT',
+            'type': 'technical',
+            'data': {
+                'rsi': 150.0,  # RSI doit être entre 0 et 100
+                'macd': {'histogram': None, 'signal': None, 'macd': None}
+            }
+        }
+        with self.assertRaises(ValueError):
+            self.mongodb_manager.store_indicators(invalid_range_indicators)
+            
+    def test_required_fields_validation(self):
+        """Test la validation des champs requis"""
+        # Test avec des champs manquants
+        missing_fields_data = {
+            'symbol': 'BTCUSDT',
+            # timestamp manquant
+            'data': {
+                'open': 50000.0,
+                # high manquant
+                'low': 49000.0,
+                'close': 50500.0,
+                'volume': 100.0
+            }
+        }
+        with self.assertRaises(ValueError):
+            self.mongodb_manager.store_market_data(missing_fields_data)
+            
+    def test_symbol_validation(self):
+        """Test la validation du format des symboles"""
+        # Test avec des symboles invalides
+        invalid_symbols = ['BTC/USDT', 'btc-usdt', '', ' ', None]
+        valid_data_template = {
+            'timestamp': datetime.now(tz.utc),
+            'data': {
+                'open': 50000.0,
+                'high': 51000.0,
+                'low': 49000.0,
+                'close': 50500.0,
+                'volume': 100.0
+            }
+        }
+        
+        for invalid_symbol in invalid_symbols:
+            test_data = valid_data_template.copy()
+            test_data['symbol'] = invalid_symbol
+            with self.assertRaises(ValueError):
+                self.mongodb_manager.store_market_data(test_data)
+                
+    def test_timestamp_validation(self):
+        """Test la validation des timestamps"""
+        future_time = datetime.now(tz.utc) + timedelta(days=1)
+        too_old_time = datetime.now(tz.utc) - timedelta(days=365*2)
+        
+        valid_data_template = {
+            'symbol': 'BTCUSDT',
+            'data': {
+                'open': 50000.0,
+                'high': 51000.0,
+                'low': 49000.0,
+                'close': 50500.0,
+                'volume': 100.0
+            }
+        }
+        
+        # Test avec une date future
+        future_data = valid_data_template.copy()
+        future_data['timestamp'] = future_time
+        with self.assertRaises(ValueError):
+            self.mongodb_manager.store_market_data(future_data)
+            
+        # Test avec une date trop ancienne
+        old_data = valid_data_template.copy()
+        old_data['timestamp'] = too_old_time
+        with self.assertRaises(ValueError):
+            self.mongodb_manager.store_market_data(old_data)
+
 if __name__ == '__main__':
     unittest.main()
