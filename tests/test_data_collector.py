@@ -4,6 +4,13 @@ from config.config import BYBIT_API_KEY, BYBIT_API_SECRET
 import pandas as pd
 from datetime import datetime
 import numpy as np
+import warnings
+
+# Filtrer les warnings spécifiques
+warnings.filterwarnings("ignore", category=FutureWarning, message="'H' is deprecated")
+warnings.filterwarnings("ignore", category=DeprecationWarning, 
+                      message="datetime.datetime.utcnow\\(\\) is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.now\\(datetime.UTC\\).")
+warnings.filterwarnings("ignore", category=DeprecationWarning, module="pybit._http_manager")
 
 class TestMarketDataCollector(unittest.TestCase):
     @classmethod
@@ -139,6 +146,84 @@ class TestMarketDataCollector(unittest.TestCase):
         self.assertIsInstance(analysis['order_book'], dict)
         self.assertIn('bids', analysis['order_book'])
         self.assertIn('asks', analysis['order_book'])
+
+    def test_get_advanced_technical_analysis(self):
+        """Test de l'analyse technique avancée"""
+        analysis = self.collector.get_advanced_technical_analysis(self.symbol)
+        
+        # Vérifier la structure de base
+        self.assertIsInstance(analysis, dict)
+        self.assertIn('indicators', analysis)
+        self.assertIn('signals', analysis)
+        self.assertIn('timestamp', analysis)
+        
+        # Vérifier les indicateurs avancés
+        indicators = analysis['indicators']
+        self.assertIsInstance(indicators, dict)
+        
+        # Vérifier la présence des indicateurs Ichimoku
+        self.assertIn('Tenkan_sen', indicators)
+        self.assertIn('Kijun_sen', indicators)
+        self.assertIn('Senkou_Span_A', indicators)
+        self.assertIn('Senkou_Span_B', indicators)
+        
+        # Vérifier la présence des autres indicateurs avancés
+        self.assertIn('ADX', indicators)
+        self.assertIn('ATR', indicators)
+        self.assertIn('MFI', indicators)
+        
+        # Vérifier les signaux
+        signals = analysis['signals']
+        self.assertIsInstance(signals, dict)
+        self.assertIn('Ichimoku', signals)
+        self.assertIn('ADX', signals)
+        self.assertIn('Stochastic', signals)
+        self.assertIn('MFI', signals)
+
+    def test_get_complete_analysis(self):
+        """Test de l'analyse technique complète"""
+        analysis = self.collector.get_complete_analysis(self.symbol)
+        
+        # Vérifier la structure de base
+        self.assertIsInstance(analysis, dict)
+        self.assertIn('timestamp', analysis)
+        self.assertIn('basic_analysis', analysis)
+        self.assertIn('advanced_analysis', analysis)
+        
+        # Vérifier l'analyse de base
+        basic = analysis['basic_analysis']
+        self.assertIn('indicators', basic)
+        self.assertIn('signals', basic)
+        self.assertIn('summary', basic)
+        
+        # Vérifier l'analyse avancée
+        advanced = analysis['advanced_analysis']
+        self.assertIn('indicators', advanced)
+        self.assertIn('signals', advanced)
+        
+        # Vérifier les indicateurs avancés spécifiques
+        advanced_indicators = advanced['indicators']
+        self.assertIn('ADX', advanced_indicators)
+        self.assertIn('ATR', advanced_indicators)
+        self.assertIn('MFI', advanced_indicators)
+        
+        # Vérifier la cohérence des données
+        self.assertIsInstance(analysis['timestamp'], float)
+        self.assertGreater(analysis['timestamp'], 0)
+
+    def test_advanced_analysis_error_handling(self):
+        """Test de la gestion des erreurs pour l'analyse avancée"""
+        # Test avec un symbole invalide
+        with self.assertRaises(Exception):
+            self.collector.get_advanced_technical_analysis('INVALID_SYMBOL')
+        
+        # Test avec un intervalle invalide
+        with self.assertRaises(Exception):
+            self.collector.get_advanced_technical_analysis(self.symbol, interval='INVALID_INTERVAL')
+        
+        # Test avec une limite invalide
+        with self.assertRaises(Exception):
+            self.collector.get_advanced_technical_analysis(self.symbol, limit=-1)
 
 if __name__ == '__main__':
     unittest.main()

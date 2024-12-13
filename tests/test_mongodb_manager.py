@@ -42,7 +42,7 @@ class TestMongoDBManager(unittest.TestCase):
         retrieved_data = self.mongodb_manager.get_latest_market_data(symbol)
         self.assertIsNotNone(retrieved_data)
         self.assertEqual(retrieved_data['symbol'], symbol)
-        self.assertEqual(retrieved_data['price'], 50000.0)
+        self.assertEqual(retrieved_data['data']['ticker']['price'], 50000.0)
 
     def test_store_and_retrieve_indicators(self):
         """Teste le stockage et la récupération des indicateurs"""
@@ -179,7 +179,7 @@ class TestMongoDBManager(unittest.TestCase):
         retrieved_data = self.mongodb_manager.get_latest_market_data(data["symbol"])
         self.assertIsNotNone(retrieved_data)
         self.assertEqual(retrieved_data['symbol'], data['symbol'])
-        self.assertEqual(retrieved_data['price'], 50000.0)
+        self.assertEqual(retrieved_data['data']['ticker']['price'], 50000.0)
 
         # Données de test pour les indicateurs
         indicators_list = [
@@ -260,7 +260,7 @@ class TestMongoDBManager(unittest.TestCase):
         # Vérifications
         self.assertIsInstance(result, dict)
         self.assertEqual(result['symbol'], symbol)
-        self.assertEqual(result['price'], 50000.0)
+        self.assertEqual(result['data']['ticker']['price'], 50000.0)
         self.assertIn('timestamp', result)
 
     def test_get_latest_indicators(self):
@@ -333,6 +333,235 @@ class TestMongoDBManager(unittest.TestCase):
         self.assertEqual(result[0]["endpoint"], "/api/v3/klines")
         self.assertEqual(result[0]["metric_type"], "response_time")
         self.assertEqual(result[0]["value"], 200)
+
+    def test_cache_retention(self):
+        """Teste la rétention du cache des indicateurs avancés"""
+        # Configuration
+        symbol = "BTCUSDT"
+        current_time = datetime.now(tz.utc)
+        old_time = current_time - timedelta(hours=25)  # Plus ancien que la rétention par défaut
+
+        # Créer d'abord les données de marché
+        market_data = {
+            "symbol": symbol,
+            "timestamp": old_time,
+            "data": {"price": 45000.0}
+        }
+        result = self.mongodb_manager.market_data.insert_one(market_data)
+        market_data_id = result.inserted_id
+
+        # Données de test au format correct
+        test_indicators = {
+            "symbol": symbol,
+            "timestamp": old_time,
+            "type": "technical",
+            "data": {
+                "advanced_rsi": 70.5,
+                "advanced_macd": {"value": 150.0, "signal": 145.0}
+            }
+        }
+
+        # Création d'entrées de cache anciennes et récentes
+        self.mongodb_manager.save_advanced_indicators(market_data_id, test_indicators)
+        
+        # Déclencher le nettoyage du cache
+        self.mongodb_manager.cleanup_cache()
+        
+        # Vérifier que seules les entrées récentes sont conservées
+        cached_data = list(self.mongodb_manager.indicators.find({"symbol": symbol}))
+        self.assertEqual(len(cached_data), 1)
+        self.assertEqual(cached_data[0]["indicators"]["advanced_rsi"], 70.5)
+
+    def test_cleanup_old_data(self):
+        """Teste le nettoyage des anciennes données de marché"""
+        symbol = "BTCUSDT"
+        current_time = datetime.now(tz.utc)
+        old_time = current_time - timedelta(days=31)  # Plus ancien que la période de rétention
+        
+        # Création de données anciennes et récentes
+        old_data = {
+            "symbol": symbol,
+            "timestamp": old_time,
+            "data": {"price": 45000.0}
+        }
+        new_data = {
+            "symbol": symbol,
+            "timestamp": current_time,
+            "data": {"price": 50000.0}
+        }
+        
+        # Stockage des données
+        self.mongodb_manager.store_market_data(old_data)
+        self.mongodb_manager.store_market_data(new_data)
+        
+        # Nettoyage des anciennes données
+        self.mongodb_manager.cleanup_old_data()
+        
+        # Vérification que seules les données récentes sont conservées
+        market_data = list(self.mongodb_manager.market_data.find({"symbol": symbol}))
+        self.assertEqual(len(market_data), 1)
+        self.assertEqual(market_data[0]["data"]["price"], 50000.0)
+
+    def test_cache_initialization(self):
+        """Teste l'initialisation du cache avec une durée de rétention personnalisée"""
+        custom_retention = 12  # 12 heures
+        mongodb_manager = MongoDBManager(cache_retention_hours=custom_retention)
+        
+        # Vérification de la configuration du cache
+        self.assertEqual(mongodb_manager.cache_retention_hours, custom_retention)
+        
+        # Nettoyage
+        if hasattr(mongodb_manager, 'client'):
+            mongodb_manager.client.close()
+
+    def test_save_and_retrieve_advanced_indicators(self):
+        """Teste le stockage et la récupération des indicateurs avancés"""
+        symbol = "BTCUSDT"
+        timestamp = datetime.now(tz.utc)
+        
+        # Créer d'abord les données de marché
+        market_data = {
+            "symbol": symbol,
+            "timestamp": timestamp,
+            "data": {"price": 45000.0}
+        }
+        result = self.mongodb_manager.market_data.insert_one(market_data)
+        market_data_id = result.inserted_id
+        
+        advanced_indicators = {
+            "symbol": symbol,
+            "timestamp": timestamp,
+            "type": "technical",
+            "data": {
+                "supertrend": {
+                    "trend": "UP",
+                    "value": 45000.0,
+                    "upper_band": 46000.0,
+                    "lower_band": 44000.0
+                },
+                "fibonacci_retracement": {
+                    "levels": {
+                        "0.236": 44500.0,
+                        "0.382": 44000.0,
+                        "0.618": 43000.0
+                    }
+                },
+                "ichimoku": {
+                    "tenkan_sen": 45200.0,
+                    "kijun_sen": 44800.0,
+                    "senkou_span_a": 45500.0,
+                    "senkou_span_b": 44200.0,
+                    "chikou_span": 45100.0
+                }
+            }
+        }
+        
+        # Test du stockage
+        self.mongodb_manager.save_advanced_indicators(market_data_id, advanced_indicators)
+        
+        # Test de la récupération
+        retrieved_data = self.mongodb_manager.get_market_data_with_indicators(symbol, include_advanced=True)
+        
+        self.assertIsNotNone(retrieved_data)
+        self.assertIn('indicators', retrieved_data)
+        self.assertIn('supertrend', retrieved_data['indicators'])
+        self.assertEqual(retrieved_data['indicators']['supertrend']['trend'], "UP")
+        self.assertEqual(retrieved_data['indicators']['fibonacci_retracement']['levels']['0.236'], 44500.0)
+        self.assertEqual(retrieved_data['indicators']['ichimoku']['tenkan_sen'], 45200.0)
+
+    def test_advanced_indicators_history(self):
+        """Teste la récupération de l'historique des indicateurs avancés"""
+        symbol = "BTCUSDT"
+        base_time = datetime.now(tz.utc)
+        
+        # Création de plusieurs entrées d'indicateurs
+        indicators_history = []
+        for i in range(3):
+            timestamp = base_time - timedelta(hours=i)
+            
+            # Créer les données de marché
+            market_data = {
+                "symbol": symbol,
+                "timestamp": timestamp,
+                "data": {"price": 45000.0 + (i * 100)}
+            }
+            result = self.mongodb_manager.market_data.insert_one(market_data)
+            market_data_id = result.inserted_id
+            
+            # Créer les indicateurs
+            indicators = {
+                "symbol": symbol,
+                "timestamp": timestamp,
+                "type": "technical",
+                "data": {
+                    "supertrend": {
+                        "trend": "UP" if i % 2 == 0 else "DOWN",
+                        "value": 45000.0 + (i * 100)
+                    },
+                    "pivot_points": {
+                        "r1": 46000.0 + (i * 100),
+                        "s1": 44000.0 - (i * 100)
+                    }
+                }
+            }
+            self.mongodb_manager.save_advanced_indicators(market_data_id, indicators)
+            indicators_history.append((timestamp, indicators))
+        
+        # Test de la récupération avec limite
+        recent_indicators = self.mongodb_manager.get_latest_indicators(symbol, limit=2)
+        
+        self.assertEqual(len(recent_indicators), 2)
+        self.assertEqual(recent_indicators[0]["indicators"]["supertrend"]["trend"], "UP")
+
+    def test_advanced_indicators_aggregation(self):
+        """Teste l'agrégation des indicateurs avancés"""
+        symbol = "BTCUSDT"
+        base_time = datetime.now(tz.utc)
+        
+        # Création de données pour l'agrégation
+        for i in range(24):  # 24 heures de données
+            timestamp = base_time - timedelta(hours=i)
+            
+            # Créer les données de marché
+            market_data = {
+                "symbol": symbol,
+                "timestamp": timestamp,
+                "data": {"price": 45000.0 + (i * 10)}
+            }
+            result = self.mongodb_manager.market_data.insert_one(market_data)
+            market_data_id = result.inserted_id
+            
+            # Créer les indicateurs
+            indicators = {
+                "symbol": symbol,
+                "timestamp": timestamp,
+                "type": "technical",
+                "data": {
+                    "supertrend": {
+                        "trend": "UP" if i % 3 == 0 else "DOWN",
+                        "value": 45000.0 + (i * 10)
+                    },
+                    "volume_profile": {
+                        "value": 1000.0 + (i * 100),
+                        "poc": 45500.0
+                    }
+                }
+            }
+            self.mongodb_manager.save_advanced_indicators(market_data_id, indicators)
+        
+        # Test de l'agrégation par période
+        hourly_data = self.mongodb_manager.get_aggregated_indicators(
+            symbol,
+            "1h",
+            start_time=base_time - timedelta(hours=24)
+        )
+        
+        self.assertTrue(len(hourly_data) > 0)
+        for entry in hourly_data:
+            self.assertIn("timestamp", entry)
+            self.assertIn("indicators", entry)
+            self.assertIn("supertrend", entry["indicators"])
+            self.assertIn("volume_profile", entry["indicators"])
 
 if __name__ == '__main__':
     unittest.main()

@@ -12,6 +12,7 @@ from src.database.mongodb_manager import MongoDBManager
 from src.data_collector.market_data import MarketDataCollector
 from src.monitoring.api_monitor import APIMonitor
 from src.data_collector.technical_indicators import TechnicalAnalysis
+from src.data_collector.advanced_technical_indicators import AdvancedTechnicalAnalysis
 
 class MarketUpdater:
     def __init__(
@@ -22,7 +23,8 @@ class MarketUpdater:
         api_secret: Optional[str] = None,
         use_testnet: bool = False,
         shutdown_timeout: int = 5,
-        instance_id: Optional[str] = None
+        instance_id: Optional[str] = None,
+        cache_retention_hours: int = 24
     ):
         """
         Initialise le service de mise à jour des données de marché
@@ -30,16 +32,17 @@ class MarketUpdater:
         Args:
             symbols: Liste des paires de trading à surveiller
             db: Instance optionnelle de MongoDBManager
-            api_key: Clé API Bybit (optionnelle, utilise la config par défaut si non fournie)
-            api_secret: Secret API Bybit (optionnel, utilise la config par défaut si non fourni)
-            use_testnet: Utiliser le testnet Bybit au lieu du mainnet
+            api_key: Clé API Bybit
+            api_secret: Secret API Bybit
+            use_testnet: Utiliser le testnet Bybit
             shutdown_timeout: Délai d'arrêt en secondes
             instance_id: Identifiant unique de l'instance du bot
+            cache_retention_hours: Durée de rétention du cache en heures
         """
         load_dotenv()
         
         self.symbols = symbols
-        self.db = db or MongoDBManager()
+        self.db = db or MongoDBManager(cache_retention_hours=cache_retention_hours)
         self.instance_id = instance_id
         self.stop_event = threading.Event()
         self.shutdown_complete = threading.Event()
@@ -71,90 +74,143 @@ class MarketUpdater:
         )
         self.api_monitor = APIMonitor()
         self.technical_analysis = TechnicalAnalysis()
+        self.advanced_technical_analysis = AdvancedTechnicalAnalysis()
         
         # Dictionnaire pour suivre les erreurs par symbole
         self.error_counts: Dict[str, int] = {symbol: 0 for symbol in symbols}
 
-    def update_market_data(self, symbol: str) -> bool:
+    def _update_market_data(self, symbol: str) -> bool:
         """Met à jour les données de marché pour un symbole donné"""
         try:
             current_time = time.time()
-            # Vérifier si une mise à jour est nécessaire (éviter les mises à jour trop fréquentes)
             if current_time - self.last_update.get(symbol, 0) < self.update_interval:
                 self.logger.debug(f"Mise à jour ignorée pour {symbol} - trop récente")
                 return True
 
-            # Check stop event before starting update
             if self.stop_event.is_set():
                 return False
 
-            # Vérifie d'abord la disponibilité de l'API
+            # Vérifier la santé de l'API
             health_status = self.api_monitor.check_api_health()
             if not health_status or health_status.get('status') != 'OK':
                 raise Exception("API Bybit is not healthy")
 
-            # Check stop event before data collection
             if self.stop_event.is_set():
                 return False
 
-            # Récupération des données
+            try:
+                # Récupérer l'analyse complète
+                analysis = self.collector.get_complete_analysis(symbol)
+            except Exception as e:
+                self.logger.error(f"Erreur lors de l'analyse pour {symbol}: {str(e)}")
+                # Fallback vers l'ancien système de collecte
+                return self._update_market_data_legacy(symbol)
+
+            # Préparer les données de base et le cache
+            market_data = {
+                'symbol': symbol,
+                'timestamp': analysis['timestamp'],
+                'basic_analysis': analysis['basic_analysis'],
+                'cached_indicators': {
+                    'last_update': time.time(),
+                    'common': {
+                        'ADX': analysis['advanced_analysis']['indicators'].get('ADX'),
+                        'ATR': analysis['advanced_analysis']['indicators'].get('ATR')
+                    }
+                }
+            }
+
+            try:
+                # Sauvegarder les données de marché et obtenir l'ID
+                market_data_id = self.db.save_market_data(market_data)
+            except Exception as e:
+                self.logger.error(f"Erreur lors de la sauvegarde des données de marché pour {symbol}: {str(e)}")
+                return False
+
+            if self.stop_event.is_set():
+                return False
+
+            # Préparer et sauvegarder les indicateurs avancés
+            advanced_data = {
+                'symbol': symbol,
+                'timestamp': analysis['timestamp'],
+                'type': 'advanced',
+                'data': {
+                    'indicators': analysis['advanced_analysis']['indicators'],
+                    'signals': analysis['advanced_analysis']['signals']
+                }
+            }
+
+            try:
+                self.db.save_advanced_indicators(market_data_id, advanced_data)
+            except Exception as e:
+                self.logger.error(f"Erreur lors de la sauvegarde des indicateurs avancés pour {symbol}: {str(e)}")
+                # Ne pas échouer si les indicateurs avancés échouent
+                pass
+
+            # Mettre à jour le timestamp et réinitialiser les erreurs
+            self.last_update[symbol] = current_time
+            self.error_counts[symbol] = 0
+            
+            self.logger.info(f"Données mises à jour pour {symbol}")
+            return True
+            
+        except Exception as e:
+            self.error_counts[symbol] = self.error_counts.get(symbol, 0) + 1
+            self.logger.error(f"Erreur lors de la mise à jour pour {symbol}: {str(e)}")
+            self.api_monitor.record_error("market_update", str(e))
+            return False
+
+    def _update_market_data_legacy(self, symbol: str) -> bool:
+        """Méthode de fallback utilisant l'ancien système de collecte"""
+        try:
+            if self.stop_event.is_set():
+                return False
+
+            # Récupération des données de base
             ticker_data = self.collector.get_ticker(symbol)
             klines_data = self.collector.get_klines(symbol, interval='1m', limit=100)
             orderbook_data = self.collector.get_order_book(symbol, limit=100)
             trades_data = self.collector.get_public_trade_history(symbol, limit=50)
 
-            # Check stop event before processing
             if self.stop_event.is_set():
                 return False
 
-            # Calcul des indicateurs techniques
-            if isinstance(klines_data, pd.DataFrame):
-                technical_data = self.technical_analysis.get_summary(klines_data)
-            else:
-                self.logger.warning(f"Impossible de calculer les indicateurs techniques pour {symbol}: format de données invalide")
-                technical_data = None
-
-            # Check stop event before saving
-            if self.stop_event.is_set():
-                return False
-
-            # Préparation des données pour la sauvegarde
+            # Format compatible avec la nouvelle structure
             market_data = {
                 'symbol': symbol,
-                'timestamp': datetime.now(),
-                'data': {
-                    'ticker': ticker_data,
-                    'klines': klines_data.to_dict('records') if isinstance(klines_data, pd.DataFrame) else klines_data,
-                    'orderbook': orderbook_data,
-                    'trades': trades_data,
-                    'exchange': 'bybit'
+                'timestamp': time.time(),
+                'basic_analysis': {
+                    'data': {
+                        'ticker': ticker_data,
+                        'klines': klines_data.to_dict('records') if isinstance(klines_data, pd.DataFrame) else klines_data,
+                        'orderbook': orderbook_data,
+                        'trades': trades_data,
+                        'exchange': 'bybit'
+                    }
                 }
             }
 
-            # Sauvegarde des données de marché
-            self.db.store_market_data(market_data)
-
-            # Sauvegarde des indicateurs techniques s'ils sont disponibles
-            if technical_data and not self.stop_event.is_set():
-                technical_data['symbol'] = symbol
-                technical_data['timestamp'] = datetime.now()
-                self.db.store_indicators(symbol=symbol, indicators=technical_data)
-                self.logger.info(f"Indicateurs techniques mis à jour pour {symbol}")
-
-            # Réinitialisation du compteur d'erreurs
+            # Utiliser la nouvelle méthode de sauvegarde
+            self.db.save_market_data(market_data)
+            
+            self.last_update[symbol] = time.time()
             self.error_counts[symbol] = 0
-            self.last_update[symbol] = current_time
+            
             return True
 
         except Exception as e:
-            # Gestion des erreurs
-            self.error_counts[symbol] += 1
-            self.logger.error(f"Erreur lors de la mise à jour des données pour {symbol} (tentative {self.error_counts[symbol]}): {str(e)}")
+            self.error_counts[symbol] = self.error_counts.get(symbol, 0) + 1
+            self.logger.error(f"Erreur lors de la mise à jour legacy pour {symbol}: {str(e)}")
             return False
+
+    def update_market_data(self, symbol: str) -> bool:
+        """Met à jour les données de marché pour un symbole donné"""
+        return self._update_market_data(symbol)
 
     def run(self):
         """Exécute la boucle principale de mise à jour des données"""
-        self.logger.info(f"Démarrage du service de mise à jour des données pour l'instance {self.instance_id}")
+        self.logger.info(f"Démarrage de la boucle de mise à jour des données pour l'instance {self.instance_id}")
         
         while not self.stop_event.is_set():
             try:
@@ -181,17 +237,21 @@ class MarketUpdater:
                             self.error_counts[symbol] = 0  # Réinitialisation du compteur
                     else:
                         self.logger.debug(f"Mise à jour différée pour {symbol} - dernière mise à jour trop récente")
-                
-                # Attendre avant la prochaine itération
-                if self.stop_event.wait(timeout=self.update_interval):
-                    break
                     
+                    # Pause courte entre les symboles
+                    time.sleep(0.5)
+                
+                # Nettoyage périodique des anciennes données (30 jours par défaut)
+                self.db.cleanup_old_data()
+                
             except Exception as e:
-                self.logger.error(f"Erreur dans la boucle de mise à jour: {str(e)}")
-                if self.stop_event.wait(timeout=30):  # Pause plus longue en cas d'erreur générale
-                    break
+                self.logger.error(f"Erreur dans la boucle principale: {str(e)}")
+                
+            finally:
+                # Attendre avant la prochaine itération
+                time.sleep(self.update_interval)
         
-        self.logger.info(f"Arrêt du service de mise à jour des données pour l'instance {self.instance_id}")
+        self.logger.info(f"Arrêt de la boucle de mise à jour des données pour l'instance {self.instance_id}")
         self.shutdown_complete.set()
 
     def start(self):

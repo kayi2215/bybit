@@ -7,6 +7,7 @@ from typing import List, Dict, Any
 import os
 from dotenv import load_dotenv
 from .technical_indicators import TechnicalAnalysis
+from .advanced_technical_indicators import AdvancedTechnicalAnalysis
 
 def interval_to_milliseconds(interval: str) -> int:
     """Convert interval string to milliseconds"""
@@ -57,6 +58,7 @@ class MarketDataCollector:
             self.logger.info("Using Bybit Testnet")
             
         self.technical_analyzer = TechnicalAnalysis()
+        self.advanced_analyzer = AdvancedTechnicalAnalysis()
 
     def _setup_logging(self):
         logging.basicConfig(
@@ -246,6 +248,68 @@ class MarketDataCollector:
             
         except Exception as e:
             self.logger.error(f"Error performing technical analysis for {symbol}: {str(e)}")
+            raise
+
+    def get_advanced_technical_analysis(self, symbol: str, interval: str = '1h', limit: int = 100) -> Dict[str, Any]:
+        """
+        Effectue une analyse technique avancée pour un symbole donné
+        
+        Args:
+            symbol: Le symbole à analyser
+            interval: L'intervalle de temps pour les données
+            limit: Le nombre de points de données à récupérer
+            
+        Returns:
+            Dict contenant les indicateurs avancés et leurs signaux
+        """
+        try:
+            df = self.get_klines(symbol, interval, limit)
+            advanced_analysis = self.advanced_analyzer.calculate_all_advanced(df)
+            advanced_signals = self.advanced_analyzer.get_advanced_signals(df)
+            
+            return {
+                'indicators': advanced_analysis,
+                'signals': advanced_signals,
+                'timestamp': datetime.now().timestamp()
+            }
+            
+        except Exception as e:
+            self.logger.error(f"Error performing advanced technical analysis for {symbol}: {str(e)}")
+            raise
+
+    def get_complete_analysis(self, symbol: str, interval: str = '1h', limit: int = 100) -> Dict[str, Any]:
+        """
+        Effectue une analyse technique complète incluant les indicateurs de base et avancés
+        
+        Args:
+            symbol: Le symbole à analyser
+            interval: L'intervalle de temps pour les données
+            limit: Le nombre de points de données à récupérer
+            
+        Returns:
+            Dict contenant l'analyse complète
+        """
+        try:
+            df = self.get_klines(symbol, interval, limit)
+            
+            # Analyse technique de base
+            basic_analysis = self.technical_analyzer.get_summary(df)
+            
+            # Analyse technique avancée
+            advanced_analysis = self.advanced_analyzer.calculate_all_advanced(df)
+            advanced_signals = self.advanced_analyzer.get_advanced_signals(df)
+            
+            return {
+                'timestamp': datetime.now().timestamp(),
+                'basic_analysis': basic_analysis,
+                'advanced_analysis': {
+                    'indicators': advanced_analysis,
+                    'signals': advanced_signals
+                }
+            }
+            
+        except Exception as e:
+            self.logger.error(f"Error performing complete analysis for {symbol}: {str(e)}")
             raise
 
     def get_market_analysis(self, symbol: str) -> Dict[str, Any]:

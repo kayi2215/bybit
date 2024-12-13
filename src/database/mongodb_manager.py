@@ -2,17 +2,21 @@ from typing import Dict, List, Optional, Any
 from pymongo import MongoClient, ASCENDING, DESCENDING
 from pymongo.collection import Collection
 from pymongo.database import Database
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta, timezone as tz
 import logging
 import os
 from dotenv import load_dotenv
 import time
+from bson import ObjectId
 
 class MongoDBManager:
-    def __init__(self, uri=None):
+    def __init__(self, uri=None, cache_retention_hours: int = 24):
         """
         Initialise le gestionnaire MongoDB
-        :param uri: URI de connexion MongoDB (optionnel)
+        
+        Args:
+            uri: URI de connexion MongoDB (optionnel)
+            cache_retention_hours: Durée de rétention du cache en heures (défaut: 24)
         """
         if uri is None:
             load_dotenv()
@@ -47,6 +51,14 @@ class MongoDBManager:
         # Création des index
         self._setup_indexes()
         
+        # Configuration du cache
+        self.cache_retention_hours = cache_retention_hours
+        self.last_cache_cleanup = time.time()
+        self.cleanup_interval = 3600  # Nettoyage toutes les heures
+        
+        # Nettoyage initial du cache
+        self._cleanup_cache()
+        
         self.logger.info("MongoDB Manager initialized")
 
     def close(self):
@@ -69,9 +81,15 @@ class MongoDBManager:
 
     def _setup_indexes(self):
         """Configure les index pour optimiser les requêtes"""
-        # Index pour market_data
+        # Index existants
         self.market_data.create_index([("symbol", ASCENDING), ("timestamp", DESCENDING)])
         self.market_data.create_index([("timestamp", DESCENDING)])
+        
+        # Nouveaux index pour la structure hybride
+        self.market_data.create_index([("symbol", ASCENDING), ("created_at", DESCENDING)])
+        self.indicators.create_index([("market_data_id", ASCENDING)])
+        self.indicators.create_index([("symbol", ASCENDING), ("timestamp", DESCENDING)])
+        self.indicators.create_index([("market_data_id", ASCENDING), ("type", ASCENDING)])
         
         # Index pour indicators
         self.indicators.create_index([("symbol", ASCENDING), ("timestamp", DESCENDING)])
@@ -94,60 +112,275 @@ class MongoDBManager:
         self.api_metrics.create_index([("timestamp", DESCENDING)])
         self.api_metrics.create_index([("endpoint", ASCENDING), ("metric_type", ASCENDING), ("timestamp", DESCENDING)])
 
-    def store_market_data(self, data: Dict[str, Any]):
+    def cleanup_cache(self):
         """
-        Stocke les données de marché dans MongoDB
-        :param data: Données à stocker contenant symbol, timestamp, et data
+        Méthode publique pour nettoyer le cache
+        """
+        return self._cleanup_cache()
+
+    def _cleanup_cache(self):
+        """
+        Nettoie les entrées de cache obsolètes
         """
         try:
-            if not hasattr(self, 'client') or self.client is None:
-                self.logger.error("MongoDB client not available")
-                return
-                
-            # Vérifier si le client est toujours utilisable
-            try:
-                self.client.admin.command('ping')
-            except Exception:
-                self.logger.error("MongoDB connection lost")
-                return
+            current_time = time.time()
             
-            if 'timestamp' not in data:
-                data['timestamp'] = datetime.now(timezone.utc)
+            # Vérifier si un nettoyage est nécessaire
+            if current_time - self.last_cache_cleanup < self.cleanup_interval:
+                return
                 
+            # Calculer la limite de temps pour le cache
+            retention_limit = current_time - (self.cache_retention_hours * 3600)
+            
+            # Mettre à jour les documents avec un cache obsolète
+            update_result = self.market_data.update_many(
+                {
+                    'cached_indicators.last_update': {'$lt': retention_limit}
+                },
+                {
+                    '$set': {
+                        'cached_indicators': {
+                            'last_update': current_time,
+                            'common': {}
+                        }
+                    }
+                }
+            )
+            
+            # Supprimer les indicateurs avancés obsolètes
+            delete_result = self.indicators.delete_many({
+                'timestamp': {'$lt': retention_limit}
+            })
+            
+            self.logger.info(
+                f"Nettoyage du cache - Mis à jour: {update_result.modified_count} "
+                f"documents, Supprimé: {delete_result.deleted_count} indicateurs"
+            )
+            
+            self.last_cache_cleanup = current_time
+            
+        except Exception as e:
+            self.logger.error(f"Erreur lors du nettoyage du cache: {str(e)}")
+
+    def save_market_data(self, data: Dict[str, Any]) -> ObjectId:
+        """
+        Sauvegarde les données de marché avec support pour le cache d'indicateurs
+        """
+        try:
+            # Vérifier et nettoyer le cache si nécessaire
+            self._cleanup_cache()
+            
+            # Continuer avec la sauvegarde normale
+            if not all(k in data for k in ['symbol', 'timestamp', 'basic_analysis']):
+                raise ValueError("Données de marché incomplètes")
+
+            document = {
+                'symbol': data['symbol'],
+                'timestamp': data['timestamp'],
+                'basic_analysis': data['basic_analysis'],
+                'cached_indicators': data.get('cached_indicators', {
+                    'last_update': time.time(),
+                    'common': {}
+                }),
+                'created_at': datetime.now(tz.utc)
+            }
+            
+            result = self.market_data.insert_one(document)
+            self.logger.debug(f"Données de marché sauvegardées pour {data['symbol']}")
+            return result.inserted_id
+            
+        except Exception as e:
+            self.logger.error(f"Erreur lors de la sauvegarde des données de marché: {str(e)}")
+            raise
+
+    def save_advanced_indicators(self, market_data_id: ObjectId, data: Dict[str, Any]) -> None:
+        """
+        Sauvegarde les indicateurs avancés liés aux données de marché
+        """
+        try:
+            if not all(k in data for k in ['symbol', 'timestamp', 'type', 'data']):
+                raise ValueError("Données d'indicateurs incomplètes")
+
+            document = {
+                'market_data_id': market_data_id,
+                'symbol': data['symbol'],
+                'timestamp': data['timestamp'],
+                'type': data['type'],
+                'indicators': data['data'],  # Stocker sous 'indicators'
+                'created_at': datetime.now(tz.utc)
+            }
+            
+            # Mise à jour ou insertion du document
+            self.indicators.update_one(
+                {
+                    'market_data_id': market_data_id,
+                    'symbol': data['symbol']
+                },
+                {'$set': document},
+                upsert=True
+            )
+            
+        except Exception as e:
+            self.logger.error(f"Erreur lors de la sauvegarde des indicateurs avancés: {str(e)}")
+            raise
+
+    def update_cached_indicators(self, market_data_id: ObjectId, indicators: Dict[str, Any]) -> None:
+        """
+        Met à jour les indicateurs en cache pour un document market_data
+        
+        Args:
+            market_data_id: ID du document market_data
+            indicators: Dictionnaire des indicateurs à mettre en cache
+        """
+        try:
+            update = {
+                '$set': {
+                    'cached_indicators': {
+                        'last_update': time.time(),
+                        'common': indicators
+                    }
+                }
+            }
+            
+            result = self.market_data.update_one({'_id': market_data_id}, update)
+            if result.modified_count == 0:
+                self.logger.warning(f"Aucune mise à jour du cache pour market_data_id: {market_data_id}")
+            else:
+                self.logger.debug(f"Cache d'indicateurs mis à jour pour market_data_id: {market_data_id}")
+                
+        except Exception as e:
+            self.logger.error(f"Erreur lors de la mise à jour du cache: {str(e)}")
+            raise
+
+    def get_market_data_with_indicators(self, symbol: str, include_advanced: bool = True) -> Optional[Dict]:
+        """
+        Récupère les données de marché avec les indicateurs pour un symbole
+        
+        Args:
+            symbol: Symbole de trading
+            include_advanced: Si True, inclut les indicateurs avancés
+            
+        Returns:
+            Dict contenant les données de marché et les indicateurs
+        """
+        try:
+            # Récupérer les dernières données de marché
+            market_data = self.get_latest_market_data(symbol)
+            if not market_data:
+                return None
+
+            if include_advanced:
+                # Récupérer les indicateurs avancés associés
+                indicators = self.indicators.find_one({
+                    'market_data_id': market_data['_id'],
+                    'symbol': symbol
+                })
+                if indicators and 'indicators' in indicators:
+                    market_data['indicators'] = indicators['indicators']
+
+            return market_data
+            
+        except Exception as e:
+            self.logger.error(f"Erreur lors de la récupération des données: {str(e)}")
+            return None
+
+    def store_market_data(self, data: Dict[str, Any]):
+        """
+        Méthode de compatibilité pour l'ancien format
+        """
+        try:
+            if not all(k in data for k in ['symbol', 'timestamp', 'data']):
+                raise ValueError("Missing required fields in market data")
+            
+            # Insérer les données
             self.market_data.insert_one(data)
-            self.logger.debug(f"Stored market data for {data.get('symbol')}")
+            self.logger.debug(f"Stored market data for {data['symbol']}")
+            
         except Exception as e:
             self.logger.error(f"Error storing market data: {str(e)}")
             raise
 
     def store_indicators(self, symbol: str, indicators: Dict[str, Any]):
         """
-        Stocke les indicateurs techniques dans MongoDB
-        :param symbol: Symbole de la paire de trading
-        :param indicators: Indicateurs à stocker
+        Stocke les indicateurs pour un symbole donné
         """
         try:
-            if not hasattr(self, 'client') or self.client is None:
-                self.logger.error("MongoDB client not available")
-                return
-                
-            # Vérifier si le client est toujours utilisable
-            try:
-                self.client.admin.command('ping')
-            except Exception:
-                self.logger.error("MongoDB connection lost")
-                return
-                
             document = {
-                "symbol": symbol,
-                "timestamp": datetime.now(timezone.utc),
-                "indicators": indicators
+                'symbol': symbol,
+                'timestamp': datetime.now(tz.utc),
+                'indicators': indicators,  # Stocker directement sous 'indicators'
+                'created_at': datetime.now(tz.utc)
             }
+            
             self.indicators.insert_one(document)
-            self.logger.debug(f"Stored indicators for {symbol}")
+            
         except Exception as e:
-            self.logger.error(f"Error storing indicators: {str(e)}")
+            self.logger.error(f"Erreur lors du stockage des indicateurs: {str(e)}")
             raise
+
+    def get_latest_market_data(self, symbol: str) -> Dict:
+        """
+        Récupère les dernières données de marché pour un symbole donné
+        """
+        try:
+            # Récupérer le document le plus récent pour ce symbole
+            result = self.market_data.find_one(
+                {"symbol": symbol},
+                sort=[("timestamp", -1)]
+            )
+            
+            if result:
+                return result
+            
+            return None
+            
+        except Exception as e:
+            self.logger.error(f"Erreur lors de la récupération des données pour {symbol}: {str(e)}")
+            return None
+
+    def get_latest_indicators(self, symbol: str, limit: int = 1) -> List[Dict]:
+        """
+        Récupère les derniers indicateurs pour un symbole donné
+        """
+        try:
+            results = list(self.indicators.find(
+                {"symbol": symbol},
+                sort=[("timestamp", -1)],
+                limit=limit
+            ))
+
+            formatted_results = []
+            for result in results:
+                # Créer un dictionnaire de base avec les champs communs
+                formatted_result = {
+                    "symbol": result["symbol"],
+                    "timestamp": result["timestamp"],
+                    "indicators": {}  # Initialiser le champ indicators
+                }
+                
+                # Si les indicateurs sont stockés sous 'indicators', les utiliser directement
+                if "indicators" in result:
+                    formatted_result["indicators"] = result["indicators"]
+                # Si les données sont stockées sous 'data' (format avancé)
+                elif "data" in result:
+                    formatted_result["indicators"] = result["data"]
+                # Sinon, collecter tous les autres champs comme indicateurs
+                else:
+                    indicators_data = {
+                        k: v for k, v in result.items() 
+                        if k not in ["_id", "created_at", "symbol", "timestamp"]
+                    }
+                    # Si nous avons des indicateurs directs, les mettre au niveau racine aussi
+                    formatted_result.update(indicators_data)
+                    formatted_result["indicators"] = indicators_data
+                
+                formatted_results.append(formatted_result)
+
+            return formatted_results
+
+        except Exception as e:
+            self.logger.error(f"Error retrieving indicators: {str(e)}")
+            return []
 
     def store_trade(self, trade_data: Dict[str, Any]):
         """
@@ -166,7 +399,7 @@ class MongoDBManager:
                 self.logger.error("MongoDB connection lost")
                 return
                 
-            trade_data["timestamp"] = datetime.now(timezone.utc)
+            trade_data["timestamp"] = datetime.now(tz.utc)
             self.trades.insert_one(trade_data)
             self.logger.info(f"Stored trade for {trade_data.get('symbol')}")
         except Exception as e:
@@ -193,7 +426,7 @@ class MongoDBManager:
                 
             document = {
                 "strategy_name": strategy_name,
-                "timestamp": datetime.now(timezone.utc),
+                "timestamp": datetime.now(tz.utc),
                 "result": result
             }
             self.backtest_results.insert_one(document)
@@ -258,7 +491,7 @@ class MongoDBManager:
                 
                 document = {
                     "symbol": data['symbol'],
-                    "timestamp": datetime.now(timezone.utc),
+                    "timestamp": datetime.now(tz.utc),
                     "data": data['data']
                 }
                 documents.append(document)
@@ -298,7 +531,7 @@ class MongoDBManager:
                 
                 document = {
                     "symbol": indicator_data['symbol'],
-                    "timestamp": datetime.now(timezone.utc),
+                    "timestamp": datetime.now(tz.utc),
                     "indicators": indicator_data['indicators']
                 }
                 documents.append(document)
@@ -333,7 +566,7 @@ class MongoDBManager:
                 "endpoint": endpoint,
                 "metric_type": metric_type,
                 "value": value,
-                "timestamp": datetime.now(timezone.utc)
+                "timestamp": datetime.now(tz.utc)
             }
             self.api_metrics.insert_one(document)
             self.logger.debug(f"Stored API metric for {endpoint}: {metric_type}")
@@ -364,7 +597,7 @@ class MongoDBManager:
                 "endpoint": endpoint,
                 "event_type": event_type,
                 "details": details,
-                "timestamp": datetime.now(timezone.utc)
+                "timestamp": datetime.now(tz.utc)
             }
             self.monitoring.insert_one(document)
             self.logger.debug(f"Stored monitoring event for {endpoint}")
@@ -383,54 +616,46 @@ class MongoDBManager:
                 sort=[("timestamp", -1)]
             )
             
-            if result and 'data' in result:
-                if 'ticker' in result['data']:
-                    # Format avec ticker
-                    return {
-                        'symbol': symbol,
-                        'price': result['data']['ticker']['price'],
-                        'timestamp': result['timestamp']
-                    }
-                else:
-                    # Format direct
-                    return {
-                        'symbol': symbol,
-                        'price': result['data'].get('price'),
-                        'timestamp': result['timestamp']
-                    }
+            if result:
+                return result
             
-            return result
+            return None
             
         except Exception as e:
             self.logger.error(f"Erreur lors de la récupération des données pour {symbol}: {str(e)}")
             return None
 
-    def get_latest_indicators(self, symbol: str, limit: int = 1) -> List[Dict[str, Any]]:
+    def get_aggregated_indicators(self, symbol: str, interval: str, start_time: datetime) -> List[Dict]:
         """
-        Récupère les derniers indicateurs techniques pour un symbole
-        :param symbol: Symbole de la paire de trading
-        :param limit: Nombre de documents à récupérer
-        :return: Liste des indicateurs
+        Récupère les indicateurs agrégés pour un symbole donné
         """
         try:
-            if not hasattr(self, 'client') or self.client is None:
-                self.logger.error("MongoDB client not available")
-                return []
-                
-            # Vérifier si le client est toujours utilisable
-            try:
-                self.client.admin.command('ping')
-            except Exception:
-                self.logger.error("MongoDB connection lost")
-                return []
+            pipeline = [
+                {
+                    "$match": {
+                        "symbol": symbol,
+                        "timestamp": {"$gte": start_time}
+                    }
+                },
+                {
+                    "$sort": {"timestamp": -1}
+                },
+                {
+                    "$project": {
+                        "_id": 1,
+                        "symbol": 1,
+                        "timestamp": 1,
+                        "indicators": 1  # Projeter les indicateurs
+                    }
+                }
+            ]
             
-            cursor = self.indicators.find(
-                {"symbol": symbol}
-            ).sort("timestamp", DESCENDING).limit(limit)
-            return list(cursor)
+            results = list(self.indicators.aggregate(pipeline))
+            return results
+
         except Exception as e:
-            self.logger.error(f"Error retrieving indicators: {str(e)}")
-            raise
+            self.logger.error(f"Error aggregating indicators: {str(e)}")
+            return []
 
     def get_trades_by_timeframe(self, start_time: datetime, end_time: datetime = None) -> List[Dict[str, Any]]:
         """
@@ -452,7 +677,7 @@ class MongoDBManager:
                 return []
             
             if end_time is None:
-                end_time = datetime.now(timezone.utc)
+                end_time = datetime.now(tz.utc)
             
             cursor = self.trades.find({
                 "timestamp": {
@@ -483,7 +708,7 @@ class MongoDBManager:
                 self.logger.error("MongoDB connection lost")
                 return
                 
-            data["timestamp"] = datetime.now(timezone.utc)
+            data["timestamp"] = datetime.now(tz.utc)
             self.monitoring.insert_one(data)
             self.logger.debug("Stored monitoring data")
         except Exception as e:
@@ -510,7 +735,7 @@ class MongoDBManager:
                 return []
             
             if end_time is None:
-                end_time = datetime.now(timezone.utc)
+                end_time = datetime.now(tz.utc)
             
             cursor = self.monitoring.find({
                 "timestamp": {
@@ -541,7 +766,7 @@ class MongoDBManager:
                 self.logger.error("MongoDB connection lost")
                 return
                 
-            metric_data["timestamp"] = datetime.now(timezone.utc)
+            metric_data["timestamp"] = datetime.now(tz.utc)
             self.api_metrics.insert_one(metric_data)
             self.logger.debug(f"Stored API metric for {metric_data.get('endpoint')}")
         except Exception as e:
@@ -691,52 +916,31 @@ class MongoDBManager:
             self.logger.error(f"Error retrieving trades history: {str(e)}")
             return []
 
-    def cleanup_old_data(self, days_to_keep: int = 30):
+    def cleanup_old_data(self, days_to_keep: int = 30) -> None:
         """
-        Nettoie les anciennes données
-        :param days_to_keep: Nombre de jours de données à conserver
+        Nettoie les anciennes données et le cache
         """
         try:
-            if not hasattr(self, 'client') or self.client is None:
-                self.logger.error("MongoDB client not available")
-                return
-                
-            # Vérifier si le client est toujours utilisable
-            try:
-                self.client.admin.command('ping')
-            except Exception:
-                self.logger.error("MongoDB connection lost")
-                return
+            cutoff_date = datetime.now(tz.utc) - timedelta(days=days_to_keep)
             
-            cutoff_date = datetime.now(timezone.utc) - timedelta(days=days_to_keep)
+            # Supprimer les anciennes données de marché
+            old_market_data = list(self.market_data.find({
+                "timestamp": {"$lt": cutoff_date}
+            }))
             
-            # Nettoyer les données de marché
-            result = self.market_data.delete_many({"timestamp": {"$lt": cutoff_date}})
-            self.logger.info(f"Deleted {result.deleted_count} old market data documents")
+            # Supprimer les indicateurs associés aux données supprimées
+            for data in old_market_data:
+                self.indicators.delete_many({
+                    "market_data_id": data["_id"]
+                })
             
-            # Nettoyer les indicateurs
-            result = self.indicators.delete_many({"timestamp": {"$lt": cutoff_date}})
-            self.logger.info(f"Deleted {result.deleted_count} old indicators documents")
+            # Supprimer les anciennes données de marché
+            result = self.market_data.delete_many({
+                "timestamp": {"$lt": cutoff_date}
+            })
             
-            # Nettoyer les transactions
-            result = self.trades.delete_many({"timestamp": {"$lt": cutoff_date}})
-            self.logger.info(f"Deleted {result.deleted_count} old trades documents")
-            
-            # Nettoyer les résultats des backtests
-            result = self.backtest_results.delete_many({"timestamp": {"$lt": cutoff_date}})
-            self.logger.info(f"Deleted {result.deleted_count} old backtest results documents")
-            
-            # Nettoyer les métriques de l'API
-            result = self.api_metrics.delete_many({"timestamp": {"$lt": cutoff_date}})
-            self.logger.info(f"Deleted {result.deleted_count} old API metrics documents")
-            
-            # Nettoyer les événements de monitoring
-            result = self.monitoring.delete_many({"timestamp": {"$lt": cutoff_date}})
-            self.logger.info(f"Deleted {result.deleted_count} old monitoring events documents")
-            
-            # Force un délai pour s'assurer que les suppressions sont effectuées
-            time.sleep(0.5)
+            self.logger.info(f"Cleaned up {result.deleted_count} old market data records")
             
         except Exception as e:
-            self.logger.error(f"Error cleaning up old data: {str(e)}")
+            self.logger.error(f"Erreur lors du nettoyage des données: {str(e)}")
             raise
