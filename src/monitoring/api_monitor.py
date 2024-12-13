@@ -1,6 +1,7 @@
 import time
 import logging
 import requests
+import threading
 from datetime import datetime
 from typing import Dict, Optional, List
 import json
@@ -30,6 +31,11 @@ class APIMonitor:
         # Initialiser les compteurs de requêtes
         self.total_requests = 0
         self.failed_requests = 0
+        
+        # Initialiser le contrôle du thread
+        self.stop_event = threading.Event()
+        self.monitoring_thread = None
+        self.is_running = False
         
         # Charger les clés API depuis les variables d'environnement
         load_dotenv()
@@ -304,3 +310,63 @@ class APIMonitor:
             health_status['status'] = 'WARNING'
         
         return health_status
+
+    def start(self):
+        """Démarre le service de monitoring"""
+        if self.is_running:
+            self.logger.warning("Le service de monitoring est déjà en cours d'exécution")
+            return
+
+        self.is_running = True
+        self.stop_event.clear()
+        self.monitoring_thread = threading.Thread(target=self.run)
+        self.monitoring_thread.daemon = True
+        self.monitoring_thread.start()
+        self.logger.info("Service de monitoring démarré")
+
+    def stop(self):
+        """Arrête le service de monitoring"""
+        if not self.is_running:
+            return
+            
+        self.logger.info("Arrêt du service de monitoring...")
+        self.stop_event.set()
+        self.is_running = False
+        
+        if self.monitoring_thread and self.monitoring_thread.is_alive():
+            self.monitoring_thread.join(timeout=30)
+        self.logger.info("Service de monitoring arrêté")
+
+    def run(self):
+        """Boucle principale du service de monitoring"""
+        while not self.stop_event.is_set():
+            try:
+                # Effectuer les vérifications de monitoring
+                self.check_api_status()
+                self.check_rate_limits()
+                self.log_metrics()
+                
+                # Attendre 60 secondes ou jusqu'à ce que stop_event soit défini
+                self.stop_event.wait(timeout=60)
+            except Exception as e:
+                self.logger.error(f"Erreur dans la boucle de monitoring: {str(e)}")
+                time.sleep(5)  # Pause courte en cas d'erreur
+
+    def check_api_status(self):
+        """Vérifie l'état de l'API"""
+        try:
+            response = requests.get(f"{self.base_url}/v5/market/tickers")
+            if response.status_code == 200:
+                self.logger.info("API est disponible")
+            else:
+                self.logger.error(f"API indisponible: {response.status_code}")
+        except Exception as e:
+            self.logger.error(f"Erreur lors de la vérification de l'état de l'API: {str(e)}")
+
+    def log_metrics(self):
+        """Enregistre les métriques"""
+        try:
+            self.record_metric('availability', 1, 'api_status')
+            self.record_metric('rate_limit', 50, 'rate_limits')
+        except Exception as e:
+            self.logger.error(f"Erreur lors de l'enregistrement des métriques: {str(e)}")

@@ -21,7 +21,8 @@ class MarketUpdater:
         api_key: Optional[str] = None,
         api_secret: Optional[str] = None,
         use_testnet: bool = False,
-        shutdown_timeout: int = 5
+        shutdown_timeout: int = 5,
+        instance_id: Optional[str] = None
     ):
         """
         Initialise le service de mise à jour des données de marché
@@ -33,16 +34,24 @@ class MarketUpdater:
             api_secret: Secret API Bybit (optionnel, utilise la config par défaut si non fourni)
             use_testnet: Utiliser le testnet Bybit au lieu du mainnet
             shutdown_timeout: Délai d'arrêt en secondes
+            instance_id: Identifiant unique de l'instance du bot
         """
         load_dotenv()
         
         self.symbols = symbols
         self.db = db or MongoDBManager()
+        self.instance_id = instance_id
         self.stop_event = threading.Event()
         self.shutdown_complete = threading.Event()
         self.shutdown_timeout = shutdown_timeout
         self.shutdown_queue = Queue()
         self.update_thread = None
+        self.last_update = {symbol: 0 for symbol in symbols}  # Timestamp de la dernière mise à jour
+        
+        # Configuration du logging et des paramètres
+        self.logger = logging.getLogger(__name__)
+        self.update_interval = 10  # Intervalle de mise à jour en secondes
+        self.max_retries = 3  # Nombre maximum de tentatives en cas d'erreur
         
         # Configuration des clés API
         self.api_key = api_key or os.getenv('BYBIT_API_KEY')
@@ -50,6 +59,9 @@ class MarketUpdater:
         
         if not self.api_key or not self.api_secret:
             raise ValueError("Les clés API Bybit sont requises")
+            
+        # Initialisation des composants avec l'ID d'instance dans les logs
+        self.logger.info(f"Initialisation du MarketUpdater pour l'instance {self.instance_id}")
         
         # Initialisation des composants
         self.collector = MarketDataCollector(
@@ -60,17 +72,18 @@ class MarketUpdater:
         self.api_monitor = APIMonitor()
         self.technical_analysis = TechnicalAnalysis()
         
-        # Configuration du logging et des paramètres
-        self.logger = logging.getLogger(__name__)
-        self.update_interval = 10  # Intervalle de mise à jour en secondes
-        self.max_retries = 3  # Nombre maximum de tentatives en cas d'erreur
-        
         # Dictionnaire pour suivre les erreurs par symbole
         self.error_counts: Dict[str, int] = {symbol: 0 for symbol in symbols}
 
     def update_market_data(self, symbol: str) -> bool:
         """Met à jour les données de marché pour un symbole donné"""
         try:
+            current_time = time.time()
+            # Vérifier si une mise à jour est nécessaire (éviter les mises à jour trop fréquentes)
+            if current_time - self.last_update.get(symbol, 0) < self.update_interval:
+                self.logger.debug(f"Mise à jour ignorée pour {symbol} - trop récente")
+                return True
+
             # Check stop event before starting update
             if self.stop_event.is_set():
                 return False
@@ -130,6 +143,7 @@ class MarketUpdater:
 
             # Réinitialisation du compteur d'erreurs
             self.error_counts[symbol] = 0
+            self.last_update[symbol] = current_time
             return True
 
         except Exception as e:
@@ -139,12 +153,12 @@ class MarketUpdater:
             return False
 
     def run(self):
-        """Lance la boucle de mise à jour des données"""
-        self.logger.info("Démarrage du service de mise à jour des données")
+        """Exécute la boucle principale de mise à jour des données"""
+        self.logger.info(f"Démarrage du service de mise à jour des données pour l'instance {self.instance_id}")
         
         while not self.stop_event.is_set():
             try:
-                # Check for shutdown request
+                # Vérifier la demande d'arrêt
                 try:
                     if self.shutdown_queue.get_nowait() == "shutdown":
                         break
@@ -155,24 +169,29 @@ class MarketUpdater:
                     if self.stop_event.is_set():
                         break
                         
-                    # Mise à jour des données avec gestion des erreurs
-                    success = self.update_market_data(symbol)
-                    
-                    if not success and self.error_counts[symbol] >= self.max_retries:
-                        self.logger.warning(f"Trop d'erreurs pour {symbol}, mise en pause temporaire")
-                        if self.stop_event.wait(timeout=60):  # Pause d'une minute avant de réessayer
-                            break
-                        self.error_counts[symbol] = 0  # Réinitialisation du compteur
-                    
-                    if self.stop_event.wait(timeout=self.update_interval):
-                        break
+                    current_time = time.time()
+                    # Vérifier si une mise à jour est nécessaire
+                    if current_time - self.last_update.get(symbol, 0) >= self.update_interval:
+                        success = self.update_market_data(symbol)
+                        
+                        if not success and self.error_counts[symbol] >= self.max_retries:
+                            self.logger.warning(f"Trop d'erreurs pour {symbol}, mise en pause temporaire")
+                            if self.stop_event.wait(timeout=60):  # Pause d'une minute avant de réessayer
+                                break
+                            self.error_counts[symbol] = 0  # Réinitialisation du compteur
+                    else:
+                        self.logger.debug(f"Mise à jour différée pour {symbol} - dernière mise à jour trop récente")
+                
+                # Attendre avant la prochaine itération
+                if self.stop_event.wait(timeout=self.update_interval):
+                    break
                     
             except Exception as e:
-                self.logger.error(f"Erreur dans la boucle principale: {str(e)}")
+                self.logger.error(f"Erreur dans la boucle de mise à jour: {str(e)}")
                 if self.stop_event.wait(timeout=30):  # Pause plus longue en cas d'erreur générale
                     break
-                
-        self.logger.info("Arrêt du service de mise à jour des données")
+        
+        self.logger.info(f"Arrêt du service de mise à jour des données pour l'instance {self.instance_id}")
         self.shutdown_complete.set()
 
     def start(self):
@@ -193,7 +212,7 @@ class MarketUpdater:
 
     def stop(self):
         """Arrête le service de mise à jour"""
-        self.logger.info("Demande d'arrêt du service de mise à jour")
+        self.logger.info(f"Arrêt du service de mise à jour des données pour l'instance {self.instance_id}")
         self.stop_event.set()
         
         # Vérifier si le thread existe et est démarré avant d'essayer de le joindre
@@ -208,4 +227,4 @@ class MarketUpdater:
         # Nettoyer la référence au thread
         self.update_thread = None
         
-        self.logger.info("Arrêt du service de mise à jour des données")
+        self.logger.info(f"Arrêt du service de mise à jour des données pour l'instance {self.instance_id}")

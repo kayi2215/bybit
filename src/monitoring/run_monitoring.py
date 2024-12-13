@@ -23,6 +23,7 @@ class MonitoringService:
         self.last_metrics_summary = datetime.now()
         self.metrics_summary_interval = 300  # 5 minutes
         self.shutdown_complete = threading.Event()  # Nouvel événement pour la synchronisation
+        self.monitoring_thread = None
         
         # Configuration des endpoints Bybit à surveiller
         self.endpoints = [
@@ -52,22 +53,38 @@ class MonitoringService:
 
     def _setup_logging(self):
         """Configure le système de logging"""
+        # Créer le logger s'il n'existe pas déjà
+        self.logger = logging.getLogger('bybit_monitoring_service')
+        
+        # Si le logger a déjà des handlers, ne pas en ajouter d'autres
+        if self.logger.handlers:
+            return
+            
         self.logger.setLevel(logging.INFO)
-        formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+        
+        # Configuration du format
+        formatter = logging.Formatter(
+            '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+        )
         
         # Handler pour la console
-        ch = logging.StreamHandler()
-        ch.setLevel(logging.INFO)
-        ch.setFormatter(formatter)
-        self.logger.addHandler(ch)
+        console_handler = logging.StreamHandler()
+        console_handler.setFormatter(formatter)
+        self.logger.addHandler(console_handler)
         
         # Handler pour le fichier
-        log_dir = os.path.join(os.path.dirname(__file__), '..', '..', 'logs')
-        os.makedirs(log_dir, exist_ok=True)
-        fh = logging.FileHandler(os.path.join(log_dir, 'bybit_api_monitoring.log'))
-        fh.setLevel(logging.INFO)
-        fh.setFormatter(formatter)
-        self.logger.addHandler(fh)
+        log_dir = "logs"
+        if not os.path.exists(log_dir):
+            os.makedirs(log_dir)
+            
+        file_handler = logging.FileHandler(
+            os.path.join(log_dir, "monitoring_service.log")
+        )
+        file_handler.setFormatter(formatter)
+        self.logger.addHandler(file_handler)
+        
+        # Empêcher la propagation aux loggers parents
+        self.logger.propagate = False
 
     def signal_handler(self, signum, frame):
         """Gestionnaire pour l'arrêt propre du service"""
@@ -168,30 +185,57 @@ class MonitoringService:
         self.logger.info("Service de monitoring arrêté")
         self.shutdown_complete.set()  # Signaler que l'arrêt est terminé
 
+    def start(self):
+        """Démarre le service de monitoring"""
+        if self.running:
+            self.logger.warning("Le service de monitoring est déjà en cours d'exécution")
+            return
+
+        self.running = True
+        self.stop_event.clear()
+        self.monitoring_thread = threading.Thread(target=self.run)
+        self.monitoring_thread.daemon = True
+        self.monitoring_thread.start()
+        self.logger.info("Service de monitoring démarré")
+
     def stop(self):
         """Arrête le service de monitoring"""
-        self.logger.info("Arrêt du service de monitoring Bybit...")
+        if not self.running:
+            return
+            
+        self.logger.info("Arrêt du service de monitoring...")
         self.stop_event.set()
-        # Attendre que le service soit complètement arrêté (timeout de 10 secondes)
-        self.shutdown_complete.wait(timeout=10)
+        self.running = False
+        
+        if self.monitoring_thread and self.monitoring_thread.is_alive():
+            self.monitoring_thread.join(timeout=30)
+        self.logger.info("Service de monitoring arrêté")
 
 def main():
     """Point d'entrée principal"""
-    # Paramètres par défaut
-    check_interval = int(os.getenv('MONITORING_INTERVAL', '60'))  # 60 secondes par défaut
-    testnet = os.getenv('USE_TESTNET', 'true').lower() == 'true'  # Testnet par défaut
+    # Créer et configurer le service
+    service = MonitoringService()
     
-    # Création du service
-    service = MonitoringService(check_interval=check_interval, testnet=testnet)
-    
-    # Configuration du gestionnaire de signal dans le thread principal
     def signal_handler(signum, frame):
+        """Gestionnaire de signal pour arrêter proprement le service"""
+        print("\nArrêt du service...")
         service.stop()
+        sys.exit(0)
     
+    # Configurer le gestionnaire de signal
     signal.signal(signal.SIGINT, signal_handler)
     
-    # Démarrage du service
-    service.run()
+    try:
+        # Démarrer le service
+        service.start()
+        
+        # Maintenir le programme principal en vie
+        while True:
+            time.sleep(1)
+            
+    except KeyboardInterrupt:
+        service.stop()
+        sys.exit(0)
 
 if __name__ == "__main__":
     main()

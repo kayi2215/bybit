@@ -15,18 +15,20 @@ class TestMarketUpdater(unittest.TestCase):
         """Configuration initiale des tests"""
         # Création des mocks
         self.mock_collector = Mock()
-        self.mock_db = create_autospec(MongoDBManager)  # Use create_autospec to properly mock MongoDBManager
+        self.mock_db = create_autospec(MongoDBManager)
         self.mock_technical_analysis = Mock()
+        self.mock_api_monitor = Mock()
         
         # Configuration du MarketUpdater avec les mocks
-        self.market_updater = MarketUpdater(['BTCUSDT'], db=self.mock_db)  # Pass mock_db directly
+        self.market_updater = MarketUpdater(['BTCUSDT'], db=self.mock_db)
         self.market_updater.collector = self.mock_collector
         self.market_updater.technical_analysis = self.mock_technical_analysis
-        
-        # Configuration du mock de l'API monitor
-        self.mock_api_monitor = Mock()
         self.market_updater.api_monitor = self.mock_api_monitor
+        
+        # Configuration des retours par défaut
         self.mock_api_monitor.check_api_health.return_value = {"status": "OK"}
+        self.mock_db.store_market_data.return_value = True
+        self.mock_db.store_indicators.return_value = True
         
         # Reduce intervals for faster tests
         self.market_updater.update_interval = 0.1  # 100ms instead of 10s
@@ -36,9 +38,11 @@ class TestMarketUpdater(unittest.TestCase):
         """Nettoyage après chaque test"""
         if hasattr(self.market_updater, 'stop'):
             self.market_updater.stop()
-        # Close any MongoDB connections if they exist
-        if hasattr(self.market_updater.db, 'client'):
-            self.market_updater.db.client.close()
+        # Reset all mocks
+        self.mock_collector.reset_mock()
+        self.mock_db.reset_mock()
+        self.mock_technical_analysis.reset_mock()
+        self.mock_api_monitor.reset_mock()
 
     def test_init(self):
         """Test de l'initialisation du MarketUpdater"""
@@ -249,6 +253,80 @@ class TestMarketUpdater(unittest.TestCase):
         self.assertTrue(result)  # La mise à jour doit réussir même si les indicateurs échouent
         self.mock_db.store_market_data.assert_called_once()  # Les données de marché sont toujours stockées
         self.mock_db.store_indicators.assert_not_called()  # Pas de stockage d'indicateurs
+
+    def test_update_deduplication(self):
+        """Test que les mises à jour trop rapprochées sont différées"""
+        symbol = "BTCUSDT"
+        
+        # Configuration des mocks avec les bonnes méthodes
+        self.mock_collector.get_ticker.return_value = {
+            'symbol': symbol,
+            'last_price': '50000',
+            'volume_24h': '1000'
+        }
+        self.mock_collector.get_klines.return_value = pd.DataFrame({
+            'timestamp': [1, 2, 3],
+            'open': [100, 101, 102],
+            'high': [103, 104, 105],
+            'low': [98, 99, 100],
+            'close': [101, 102, 103],
+            'volume': [1000, 1100, 1200]
+        })
+        self.mock_collector.get_order_book.return_value = {
+            'bids': [['49999', '1.0']],
+            'asks': [['50001', '1.0']]
+        }
+        self.mock_collector.get_public_trade_history.return_value = [{
+            'price': '50000',
+            'qty': '1.0',
+            'time': 1000000
+        }]
+        self.mock_api_monitor.check_api_health.return_value = {"status": "OK"}
+        self.mock_technical_analysis.get_summary.return_value = {
+            'RSI': 65.0,
+            'MACD': 0.5
+        }
+        
+        # Première mise à jour
+        self.assertTrue(self.market_updater.update_market_data(symbol))
+        first_update_time = self.market_updater.last_update[symbol]
+        
+        # Tentative de mise à jour immédiate
+        self.assertTrue(self.market_updater.update_market_data(symbol))
+        
+        # Vérifier que le mock n'a été appelé qu'une seule fois
+        self.assertEqual(self.mock_collector.get_ticker.call_count, 1)
+        
+        # Attendre que l'intervalle soit passé
+        time.sleep(self.market_updater.update_interval + 0.1)
+        
+        # Nouvelle mise à jour
+        self.assertTrue(self.market_updater.update_market_data(symbol))
+        second_update_time = self.market_updater.last_update[symbol]
+        
+        # Vérifier que la deuxième mise à jour a bien eu lieu
+        self.assertEqual(self.mock_collector.get_ticker.call_count, 2)
+        self.assertGreater(second_update_time, first_update_time)
+
+    def test_graceful_shutdown(self):
+        """Test de l'arrêt propre du service"""
+        # Démarrer le service
+        self.market_updater.start()
+        time.sleep(0.2)  # Laisser le temps au thread de démarrer
+        
+        # Vérifier que le service tourne
+        self.assertTrue(self.market_updater.update_thread.is_alive())
+        
+        # Sauvegarder une référence au thread
+        update_thread = self.market_updater.update_thread
+        
+        # Demander l'arrêt
+        self.market_updater.stop()
+        
+        # Vérifier que le thread s'est arrêté proprement
+        update_thread.join(timeout=2)
+        self.assertFalse(update_thread.is_alive())
+        self.assertTrue(self.market_updater.shutdown_complete.is_set())
 
 if __name__ == '__main__':
     unittest.main()

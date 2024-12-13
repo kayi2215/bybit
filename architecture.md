@@ -19,9 +19,28 @@ classDiagram
         +start_monitoring()
         +trading_loop()
         +start_trading()
+        +_process_symbol(symbol)
         +start()
         +stop()
         +handle_shutdown()
+    }
+
+    class MarketUpdater {
+        -symbols: List[str]
+        -db: MongoDBManager
+        -collector: MarketDataCollector
+        -technical_analysis: TechnicalAnalysis
+        -api_monitor: APIMonitor
+        -update_interval: int
+        -stop_event: Event
+        -shutdown_complete: Event
+        -last_update: Dict[str, float]
+        -error_counts: Dict[str, int]
+        +__init__(symbols, db, api_key, api_secret)
+        +update_market_data(symbol)
+        +start()
+        +stop()
+        +run()
     }
 
     class MarketDataCollector {
@@ -55,6 +74,11 @@ classDiagram
         +get_summary(df)
         +validate_indicators(indicators)
     }
+
+    TradingBot --> MarketUpdater
+    MarketUpdater --> MarketDataCollector
+    MarketUpdater --> TechnicalAnalysis
+    MarketDataCollector --> TechnicalAnalysis
 
     class MongoDBManager {
         -client: MongoClient
@@ -105,49 +129,43 @@ classDiagram
         +check_api_health()
         +handle_alerts()
     }
-
-    class MarketUpdater {
-        -symbols: List[str]
-        -db: MongoDBManager
-        -collector: MarketDataCollector
-        -api_monitor: APIMonitor
-        -technical_analysis: TechnicalAnalysis
-        -stop_event: Event
-        -shutdown_complete: Event
-        -shutdown_timeout: int
-        -shutdown_queue: Queue
-        -update_thread: Thread
-        -api_key: str
-        -api_secret: str
-        -logger
-        -update_interval: int
-        -max_retries: int
-        -error_counts: Dict[str, int]
-        +__init__(symbols, db, api_key, api_secret, use_testnet, shutdown_timeout)
-        +update_market_data(symbol)
-        +start()
-        +run()
-        +stop()
-        +handle_shutdown()
-        -process_market_data(symbol, data)
-    }
-
-    TradingBot --> MarketDataCollector : uses
-    TradingBot --> MongoDBManager : uses
-    TradingBot --> MonitoringService : uses
-    TradingBot --> MarketUpdater : uses
-    MarketDataCollector --> TechnicalAnalysis : uses
-    MonitoringService --> APIMonitor : uses
-    MarketUpdater --> MarketDataCollector : uses
-    MarketUpdater --> MongoDBManager : uses
-
-    note for TradingBot "Orchestrateur principal avec gestion des threads"
-    note for MarketDataCollector "Interface avec l'API Bybit et traitement des données"
-    note for MongoDBManager "Gestion de la persistance avec validation"
-    note for TechnicalAnalysis "Analyse technique avec validation"
-    note for APIMonitor "Surveillance de l'API avec alertes"
-    note for MarketUpdater "Mise à jour des données avec gestion gracieuse de l'arrêt"
 ```
+
+## Composants Principaux
+
+### TradingBot
+- Point d'entrée principal du système
+- Gère le cycle de vie du bot et la coordination des services
+- Implémente le pattern Singleton pour garantir une seule instance
+- Utilise _process_symbol pour la mise à jour optimisée des données
+
+### MarketUpdater
+- Gère les mises à jour périodiques des données de marché
+- Implémente un système de déduplication des mises à jour
+- Maintient un timestamp de dernière mise à jour par symbole
+- Gère les erreurs avec un système de comptage et retry
+- Assure un arrêt propre avec shutdown_complete
+
+### Interaction entre les composants
+1. TradingBot initialise MarketUpdater avec les symboles configurés
+2. MarketUpdater gère de manière autonome les mises à jour périodiques
+3. TradingBot peut demander des mises à jour via _process_symbol
+4. La déduplication assure qu'une seule mise à jour est effectuée dans l'intervalle configuré
+
+## Optimisations
+1. Déduplication des mises à jour :
+   - Utilisation de timestamps pour éviter les mises à jour trop fréquentes
+   - Coordination entre TradingBot et MarketUpdater
+   
+2. Gestion des erreurs :
+   - Comptage des erreurs par symbole
+   - Système de retry avec backoff
+   - Logs détaillés pour le debugging
+
+3. Performance :
+   - Réduction des appels API inutiles
+   - Optimisation des intervalles de mise à jour
+   - Meilleure utilisation des ressources
 
 ## Structure des Données
 

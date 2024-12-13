@@ -13,73 +13,112 @@ import logging
 from datetime import datetime
 import pytz as tz
 import atexit
+import uuid
+import traceback
 
 class TradingBot:
     _instance = None
+    _lock = threading.Lock()
     _lock_file = "/tmp/trading_bot.lock"
     _lock_fd = None
+    _instance_id = None
     
     def __new__(cls, *args, **kwargs):
-        if not cls._instance:
-            cls._instance = super(TradingBot, cls).__new__(cls)
-            cls._instance._initialized = False
+        with cls._lock:
+            if not cls._instance:
+                cls._instance = super(TradingBot, cls).__new__(cls)
+                cls._instance_id = str(uuid.uuid4())[:8]  # Identifiant unique pour chaque instance
+                logging.getLogger('trading_bot').info(f"Création d'une nouvelle instance de TradingBot (ID: {cls._instance_id})")
+            else:
+                logging.getLogger('trading_bot').warning(
+                    f"Tentative de création d'une nouvelle instance alors qu'une instance existe déjà (ID existant: {cls._instance_id})\n"
+                    f"Stack trace:\n{traceback.format_stack()}"
+                )
         return cls._instance
 
     def __init__(self, symbols=None, db=None):
-        if hasattr(self, '_initialized') and self._initialized:
-            return
+        with self._lock:
+            if hasattr(self, '_initialized') and self._initialized:
+                logging.getLogger('trading_bot').debug(f"Réutilisation de l'instance existante (ID: {self._instance_id})")
+                return
             
-        # Vérifier le fichier de verrouillage
+            # Configuration du logging avant tout
+            self.setup_logging()
+            self.logger.info(f"Initialisation d'une nouvelle instance de TradingBot (ID: {self._instance_id})")
+            
+            # Vérifier le fichier de verrouillage
+            try:
+                # Ouvrir le fichier en mode écriture
+                self._lock_fd = open(self._lock_file, 'w')
+                
+                # Tenter d'acquérir le verrou
+                fcntl.flock(self._lock_fd.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                
+                # Écrire les informations de l'instance dans le fichier
+                instance_info = {
+                    'pid': os.getpid(),
+                    'instance_id': self._instance_id,
+                    'start_time': datetime.now().isoformat()
+                }
+                self._lock_fd.write(str(instance_info))
+                self._lock_fd.flush()
+                
+            except (IOError, OSError):
+                if hasattr(self, '_lock_fd') and self._lock_fd:
+                    self._lock_fd.close()
+                self.logger.error(f"Impossible de créer une nouvelle instance - Une autre instance est déjà en cours d'exécution")
+                raise RuntimeError("Une autre instance du bot est déjà en cours d'exécution")
+            
+            # Enregistrer la fonction de nettoyage
+            atexit.register(self._cleanup)
+            
+            # Initialisation des attributs
+            self.symbols = symbols or ["BTCUSDT"]
+            self.db = db if db is not None else MongoDBManager()
+            self._initialized = True
+            
+            self.logger.info("Vérification des clés API Bybit...")
+            
+            # Vérification des clés API
+            if not BYBIT_API_KEY or not BYBIT_API_SECRET:
+                self.logger.error("Les clés API Bybit ne sont pas configurées dans le fichier .env")
+                raise ValueError("Les clés API Bybit sont requises. Veuillez configurer le fichier .env")
+            
+            self.logger.info("Vérification des clés API Bybit...")
+            
+            # Initialisation des composants
+            self._init_components()
+            
+            self.logger.info("Bot de trading initialisé")
+            
+            # État du bot
+            self.is_running = False
+            self.monitoring_thread: Optional[threading.Thread] = None
+            self.trading_thread: Optional[threading.Thread] = None
+
+    def _init_components(self):
+        """Initialise les composants du bot"""
         try:
-            # Ouvrir le fichier en mode écriture
-            self._lock_fd = open(self._lock_file, 'w')
+            # Vérifier si les composants sont déjà initialisés
+            if hasattr(self, 'market_data') and hasattr(self, 'monitoring_service') and hasattr(self, 'data_updater'):
+                self.logger.debug(f"Les composants sont déjà initialisés pour l'instance {self._instance_id}")
+                return
+
+            self.logger.debug(f"Initialisation des composants pour l'instance {self._instance_id}")
             
-            # Tenter d'acquérir le verrou
-            fcntl.flock(self._lock_fd.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            # Initialiser les composants une seule fois
+            self.market_data = MarketDataCollector(BYBIT_API_KEY, BYBIT_API_SECRET)
+            self.monitoring_service = MonitoringService(check_interval=60)
+            self.data_updater = MarketUpdater(
+                symbols=self.symbols,
+                db=self.db,
+                instance_id=self._instance_id  # Passer l'ID d'instance aux composants
+            )
             
-            # Écrire le PID dans le fichier
-            self._lock_fd.write(str(os.getpid()))
-            self._lock_fd.flush()
-            
-        except (IOError, OSError):
-            if hasattr(self, '_lock_fd') and self._lock_fd:
-                self._lock_fd.close()
-            raise RuntimeError("Une autre instance du bot est déjà en cours d'exécution")
-        
-        # Enregistrer la fonction de nettoyage
-        atexit.register(self._cleanup)
-        
-        # Configuration du logging
-        self.setup_logging()
-        
-        # Vérification des clés API
-        if not BYBIT_API_KEY or not BYBIT_API_SECRET:
-            self.logger.error("Les clés API Bybit ne sont pas configurées dans le fichier .env")
-            raise ValueError("Les clés API Bybit sont requises. Veuillez configurer le fichier .env")
-        
-        self.logger.info("Vérification des clés API Bybit...")
-        
-        # Liste des symboles à trader
-        self.symbols = symbols or ["BTCUSDT"]
-        
-        # Initialisation de la base de données
-        self.db = db if db is not None else MongoDBManager()
-        
-        # Initialisation des composants
-        self.market_data = MarketDataCollector(BYBIT_API_KEY, BYBIT_API_SECRET)
-        self.monitoring_service = MonitoringService(check_interval=60)
-        self.data_updater = MarketUpdater(
-            symbols=self.symbols,
-            db=self.db
-        )
-        
-        # État du bot
-        self.is_running = False
-        self.monitoring_thread: Optional[threading.Thread] = None
-        self.trading_thread: Optional[threading.Thread] = None
-        
-        self.logger.info("Bot de trading initialisé")
-        self._initialized = True
+            self.logger.debug(f"Composants initialisés avec succès pour l'instance {self._instance_id}")
+        except Exception as e:
+            self.logger.error(f"Erreur lors de l'initialisation des composants: {str(e)}")
+            raise
 
     def _cleanup(self):
         """Nettoie les ressources lors de la fermeture"""
@@ -113,30 +152,38 @@ class TradingBot:
 
     def setup_logging(self):
         """Configure le système de logging pour le bot"""
+        # Créer le logger s'il n'existe pas déjà
         self.logger = logging.getLogger('trading_bot')
         
-        # Éviter la duplication des handlers
-        if not self.logger.handlers:
-            self.logger.setLevel(logging.INFO)
+        # Si le logger a déjà des handlers, ne pas en ajouter d'autres
+        if self.logger.handlers:
+            return
             
-            # Créer le dossier logs s'il n'existe pas
-            os.makedirs('logs', exist_ok=True)
+        self.logger.setLevel(logging.INFO)
+        
+        # Configuration du format
+        formatter = logging.Formatter(
+            '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+        )
+        
+        # Handler pour la console
+        console_handler = logging.StreamHandler()
+        console_handler.setFormatter(formatter)
+        self.logger.addHandler(console_handler)
+        
+        # Handler pour le fichier
+        log_dir = "logs"
+        if not os.path.exists(log_dir):
+            os.makedirs(log_dir)
             
-            # Handler pour le fichier
-            fh = logging.FileHandler('logs/trading_bot.log')
-            fh.setLevel(logging.INFO)
-            
-            # Handler pour la console
-            ch = logging.StreamHandler()
-            ch.setLevel(logging.INFO)
-            
-            # Format
-            formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
-            fh.setFormatter(formatter)
-            ch.setFormatter(formatter)
-            
-            self.logger.addHandler(fh)
-            self.logger.addHandler(ch)
+        file_handler = logging.FileHandler(
+            os.path.join(log_dir, f"trading_bot_{self._instance_id}.log")
+        )
+        file_handler.setFormatter(formatter)
+        self.logger.addHandler(file_handler)
+        
+        # Empêcher la propagation aux loggers parents
+        self.logger.propagate = False
 
     def log_trading_decision(self, symbol: str, decision: str, indicators: dict):
         """Log détaillé des décisions de trading avec leur justification"""
@@ -342,12 +389,39 @@ class TradingBot:
         self.trading_thread.daemon = True
         self.trading_thread.start()
 
+    def _process_symbol(self, symbol: str):
+        """Traite les données de marché pour un symbole donné"""
+        try:
+            # Récupérer les dernières données
+            if hasattr(self, 'data_updater'):
+                # Vérifier si une mise à jour est nécessaire
+                current_time = time.time()
+                last_update = self.data_updater.last_update.get(symbol, 0)
+                
+                if current_time - last_update >= self.data_updater.update_interval:
+                    success = self.data_updater.update_market_data(symbol)
+                    if success:
+                        self.logger.debug(f"Données mises à jour pour {symbol}")
+                    else:
+                        self.logger.warning(f"Échec de la mise à jour des données pour {symbol}")
+                else:
+                    self.logger.debug(f"Mise à jour différée pour {symbol} - dernière mise à jour trop récente")
+            else:
+                self.logger.warning(f"data_updater non initialisé pour {symbol}")
+        except Exception as e:
+            self.logger.error(f"Erreur lors du traitement des données pour {symbol}: {str(e)}")
+            raise
+
     def start(self):
         """Démarre le bot (monitoring + trading + mise à jour des données)"""
+        if self.is_running:
+            self.logger.warning(f"Le bot (ID: {self._instance_id}) est déjà en cours d'exécution")
+            return
+
+        self.logger.info(f"Démarrage du bot (ID: {self._instance_id})...")
+        self.is_running = True
+
         try:
-            self.logger.info("Démarrage du bot...")
-            self.is_running = True
-            
             # Vérifier la connexion à MongoDB
             try:
                 self.db.client.admin.command('ping')
@@ -357,51 +431,45 @@ class TradingBot:
                 return
             
             # Démarrer le service de mise à jour des données
-            self.data_updater_thread = threading.Thread(target=self.data_updater.run)
-            self.data_updater_thread.daemon = True
-            self.data_updater_thread.start()
-            
+            if hasattr(self, 'data_updater'):
+                self.data_updater.start()
+
             # Démarrer le service de monitoring
-            self.monitoring_thread = threading.Thread(target=self.monitoring_service.run)
-            self.monitoring_thread.daemon = True
-            self.monitoring_thread.start()
-            
-            # Démarrer le thread de trading
-            self.trading_thread = threading.Thread(target=self.trading_loop)
-            self.trading_thread.daemon = True
-            self.trading_thread.start()
-            
+            if hasattr(self, 'monitoring_service'):
+                self.monitoring_service.start()
+
+            # Démarrer la récupération des données
+            for symbol in self.symbols:
+                self.logger.info(f"Tentative de récupération des données pour {symbol}")
+                self._process_symbol(symbol)
+
         except Exception as e:
-            self.logger.error(f"Erreur lors du démarrage du bot: {str(e)}")
-            self.is_running = False
+            self.logger.error(f"Erreur lors du démarrage du bot (ID: {self._instance_id}): {str(e)}")
+            self.stop()
             raise
 
     def stop(self):
         """Arrête le bot et ses services"""
-        self.logger.info("Arrêt du bot...")
-        self.is_running = False
+        if not self.is_running:
+            self.logger.warning(f"Le bot (ID: {self._instance_id}) n'est pas en cours d'exécution")
+            return
+
+        self.logger.info(f"Arrêt du bot (ID: {self._instance_id})...")
         
-        # Arrêt du thread de trading
-        if self.trading_thread and self.trading_thread.is_alive():
-            self.trading_thread.join(timeout=30)  # Attendre 30 secondes max
-            if self.trading_thread.is_alive():
-                self.logger.warning("Le thread de trading ne s'est pas arrêté proprement")
-        
-        # Arrêt du thread de monitoring
-        if self.monitoring_thread and self.monitoring_thread.is_alive():
-            self.monitoring_service.stop()  # Cette méthode attend maintenant la fin du service
-            self.monitoring_thread.join(timeout=30)  # Attendre 30 secondes max
-            if self.monitoring_thread.is_alive():
-                self.logger.warning("Le thread de monitoring ne s'est pas arrêté proprement")
-        
-        # Arrêt du thread de mise à jour des données
-        if hasattr(self, 'data_updater_thread') and self.data_updater_thread and self.data_updater_thread.is_alive():
-            self.data_updater.stop()
-            self.data_updater_thread.join(timeout=30)  # Attendre 30 secondes max
-            if self.data_updater_thread.is_alive():
-                self.logger.warning("Le thread de mise à jour des données ne s'est pas arrêté proprement")
-        
-        self.logger.info("Bot arrêté avec succès")
+        try:
+            # Arrêter les services dans l'ordre inverse du démarrage
+            if hasattr(self, 'monitoring_service'):
+                self.monitoring_service.stop()
+            
+            if hasattr(self, 'data_updater'):
+                self.data_updater.stop()
+
+            self.is_running = False
+            self.logger.info(f"Bot (ID: {self._instance_id}) arrêté avec succès")
+            
+        except Exception as e:
+            self.logger.error(f"Erreur lors de l'arrêt du bot (ID: {self._instance_id}): {str(e)}")
+            raise
 
 if __name__ == "__main__":
     # Créer et démarrer le bot
