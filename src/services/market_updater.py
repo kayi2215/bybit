@@ -72,7 +72,7 @@ class MarketUpdater:
             ticker_data = self.collector.get_ticker(symbol)
             klines_data = self.collector.get_klines(symbol, interval='1m', limit=100)
             orderbook_data = self.collector.get_order_book(symbol, limit=100)
-            trades_data = self.collector.get_recent_trades(symbol, limit=50)
+            trades_data = self.collector.get_public_trade_history(symbol, limit=50)
 
             # Préparation des données pour la sauvegarde
             market_data = {

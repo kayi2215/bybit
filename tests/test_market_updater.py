@@ -83,7 +83,7 @@ class TestMarketUpdater(unittest.TestCase):
             'bids': [['49999', '1.0']],
             'asks': [['50001', '1.0']]
         }
-        self.mock_collector.get_recent_trades.return_value = [{
+        self.mock_collector.get_public_trade_history.return_value = [{
             'id': 12345,
             'price': '50000',
             'qty': '1.0',
@@ -99,7 +99,7 @@ class TestMarketUpdater(unittest.TestCase):
         self.mock_collector.get_ticker.assert_called_once_with(symbol)
         self.mock_collector.get_klines.assert_called_once_with(symbol, interval='1m', limit=100)
         self.mock_collector.get_order_book.assert_called_once_with(symbol, limit=100)
-        self.mock_collector.get_recent_trades.assert_called_once_with(symbol, limit=50)
+        self.mock_collector.get_public_trade_history.assert_called_once_with(symbol, limit=50)
         
         # Vérification de la sauvegarde des données
         self.mock_db.store_market_data.assert_called_once()
@@ -152,7 +152,7 @@ class TestMarketUpdater(unittest.TestCase):
                 'bids': [['49999', '1.0']],
                 'asks': [['50001', '1.0']]
             }
-            self.mock_collector.get_recent_trades.return_value = [{
+            self.mock_collector.get_public_trade_history.return_value = [{
                 'id': 12345,
                 'price': '50000',
                 'qty': '1.0',
@@ -185,7 +185,7 @@ class TestMarketUpdater(unittest.TestCase):
         self.assertTrue(self.mock_collector.get_ticker.called)
         self.assertTrue(self.mock_collector.get_klines.called)
         self.assertTrue(self.mock_collector.get_order_book.called)
-        self.assertTrue(self.mock_collector.get_recent_trades.called)
+        self.assertTrue(self.mock_collector.get_public_trade_history.called)
         self.assertTrue(self.mock_db.store_market_data.called)
         self.assertTrue(self.market_updater.stop_event.is_set())
         self.assertTrue(self.market_updater.shutdown_complete.is_set())
