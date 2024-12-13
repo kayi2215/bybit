@@ -22,7 +22,9 @@ class APIMonitor:
             'latency': 2000,  # ms - aligné avec Binance
             'error_rate': 0.1,  # 10%
             'consecutive_failures': 3,
-            'rate_limit_threshold': 0.8  # 80% de la limite d'utilisation
+            'rate_limit_threshold': 0.8,  # 80% de la limite d'utilisation
+            'indicator_calculation_time': 5000,  # ms
+            'validation_error_threshold': 0.05  # 5% d'erreurs de validation acceptables
         }
         self.consecutive_failures = 0
         self.testnet = testnet
@@ -181,7 +183,7 @@ class APIMonitor:
                 'status': 'OK'
             }
 
-    def record_metric(self, metric_type: str, value: float, endpoint: str):
+    def record_metric(self, metric_type: str, value: float, endpoint: str, additional_data: Dict = None):
         """Enregistre une métrique"""
         metric = {
             'timestamp': datetime.now().isoformat(),
@@ -191,6 +193,8 @@ class APIMonitor:
             'testnet': self.testnet,
             'exchange': self.exchange
         }
+        if additional_data:
+            metric.update(additional_data)
         self.metrics.append(metric)
         self._save_metrics()
         self._check_alerts(metric)
@@ -213,6 +217,17 @@ class APIMonitor:
             error_rate = self.failed_requests / self.total_requests if self.total_requests > 0 else 0
             if error_rate > self.alert_thresholds['error_rate']:
                 self.logger.warning(f"High error rate detected: {error_rate:.2%}")
+        
+        elif metric['type'] == 'validation':
+            validation_metrics = [m for m in self.metrics if m['type'] == 'validation']
+            if validation_metrics:
+                error_rate = sum(1 for m in validation_metrics if m['value'] == 0) / len(validation_metrics)
+                if error_rate > self.alert_thresholds['validation_error_threshold']:
+                    self.logger.warning(f"High validation error rate detected: {error_rate:.2%}")
+        
+        elif metric['type'] == 'calculation_time':
+            if metric['value'] > self.alert_thresholds['indicator_calculation_time']:
+                self.logger.warning(f"High calculation time detected: {metric['value']}ms")
         
         if self.consecutive_failures >= self.alert_thresholds['consecutive_failures']:
             self.logger.error(f"Multiple consecutive failures detected: {self.consecutive_failures}")
@@ -286,6 +301,8 @@ class APIMonitor:
             'latency': None,
             'availability': False,
             'rate_limits': {},
+            'indicators_health': {},
+            'performance': {},
             'alerts': [],
             'timestamp': datetime.now().isoformat()
         }
@@ -300,16 +317,162 @@ class APIMonitor:
         # Vérifier les limites de taux
         health_status['rate_limits'] = self.check_rate_limits()
         
+        # Vérifier la santé des indicateurs
+        health_status['indicators_health'] = self.check_indicators_health()
+        
+        # Vérifier la performance
+        health_status['performance'] = self.monitor_calculation_performance()
+        
         # Récupérer les alertes actives
         health_status['alerts'] = self.get_alerts()
         
         # Déterminer le statut global
         if not health_status['availability']:
             health_status['status'] = 'CRITICAL'
-        elif health_status['alerts']:
+        elif health_status['alerts'] or health_status['indicators_health']['status'] != 'OK':
             health_status['status'] = 'WARNING'
         
         return health_status
+
+    def check_indicators_health(self) -> Dict:
+        """Vérifie la santé des indicateurs avancés"""
+        indicators_health = {
+            'status': 'OK',
+            'indicators': {},
+            'timestamp': datetime.now().isoformat()
+        }
+        
+        for indicator in ['MACD', 'ADX', 'ATR', 'SuperTrend']:
+            indicator_status = self._check_indicator_validity(indicator)
+            indicators_health['indicators'][indicator] = indicator_status
+            
+            # Mettre à jour le statut global si nécessaire
+            if indicator_status['status'] != 'OK':
+                indicators_health['status'] = 'WARNING'
+        
+        return indicators_health
+
+    def _check_indicator_validity(self, indicator_name: str) -> Dict:
+        """Vérifie la validité d'un indicateur spécifique"""
+        validation_metrics = [m for m in self.metrics 
+                            if m['type'] == 'validation' 
+                            and m['endpoint'] == f'indicators/{indicator_name}']
+        
+        if not validation_metrics:
+            return {
+                'status': 'UNKNOWN',
+                'last_update': None,
+                'error_count': 0,
+                'validation_errors': [],
+                'validation_rules': self._get_validation_rules(indicator_name)
+            }
+        
+        recent_metrics = sorted(validation_metrics, key=lambda x: x['timestamp'])[-10:]
+        error_count = sum(1 for m in recent_metrics if m['value'] == 0)
+        
+        return {
+            'status': 'OK' if error_count == 0 else 'WARNING',
+            'last_update': recent_metrics[-1]['timestamp'],
+            'error_count': error_count,
+            'validation_errors': [m.get('error_message') for m in recent_metrics if m['value'] == 0],
+            'validation_rules': self._get_validation_rules(indicator_name)
+        }
+
+    def _get_validation_rules(self, indicator_name: str) -> Dict:
+        """Retourne les règles de validation pour un indicateur"""
+        rules = {
+            'MACD': {
+                'type': 'dict',
+                'required_fields': ['value', 'signal', 'histogram'],
+                'field_types': {'value': 'float', 'signal': 'float', 'histogram': 'float'}
+            },
+            'ADX': {
+                'type': 'float',
+                'range': [0, 100]
+            },
+            'ATR': {
+                'type': 'float',
+                'min': 0
+            },
+            'SuperTrend': {
+                'type': 'dict',
+                'required_fields': ['value', 'direction'],
+                'field_types': {'value': 'float', 'direction': 'str'}
+            }
+        }
+        return rules.get(indicator_name, {})
+
+    def monitor_calculation_performance(self) -> Dict:
+        """Monitore la performance des calculs d'indicateurs"""
+        performance_metrics = [m for m in self.metrics if m['type'] == 'calculation_time']
+        
+        if not performance_metrics:
+            return {
+                'calculation_time': 0,
+                'memory_usage': 0,
+                'cpu_usage': 0,
+                'bottlenecks': [],
+                'indicators_performance': {}
+            }
+        
+        recent_metrics = sorted(performance_metrics, key=lambda x: x['timestamp'])[-5:]
+        avg_calc_time = sum(m['value'] for m in recent_metrics) / len(recent_metrics)
+        
+        # Performances par indicateur
+        indicators_performance = {}
+        bottlenecks = []
+        for indicator in ['MACD', 'ADX', 'ATR', 'SuperTrend']:
+            indicator_metrics = [m for m in recent_metrics 
+                               if m.get('endpoint', '').endswith(indicator)]
+            if indicator_metrics:
+                avg_time = sum(m['value'] for m in indicator_metrics) / len(indicator_metrics)
+                indicators_performance[indicator] = {
+                    'avg_calculation_time': avg_time,
+                    'status': 'OK' if avg_time < self.alert_thresholds['indicator_calculation_time'] else 'WARNING'
+                }
+                if avg_time > self.alert_thresholds['indicator_calculation_time']:
+                    bottlenecks.append(f"High calculation time for {indicator}: {avg_time:.2f}ms")
+        
+        if avg_calc_time > self.alert_thresholds['indicator_calculation_time']:
+            bottlenecks.append(f"High average calculation time: {avg_calc_time:.2f}ms")
+        
+        return {
+            'calculation_time': avg_calc_time,
+            'memory_usage': 0,  # À implémenter si nécessaire
+            'cpu_usage': 0,     # À implémenter si nécessaire
+            'bottlenecks': bottlenecks,
+            'indicators_performance': indicators_performance
+        }
+
+    def record_validation_metrics(self, validation_results: Dict):
+        """Enregistre les métriques de validation des indicateurs"""
+        timestamp = datetime.now().isoformat()
+        
+        for indicator, result in validation_results.items():
+            metric_value = 1 if result.get('valid', False) else 0
+            error_message = result.get('error', 'Unknown error')
+            
+            self.record_metric(
+                metric_type='validation',
+                value=metric_value,
+                endpoint=f'indicators/{indicator}',
+                additional_data={
+                    'error_message': error_message if not result.get('valid', False) else None,
+                    'validation_timestamp': timestamp,
+                    'indicator_type': indicator
+                }
+            )
+            
+            if not result.get('valid', False):
+                self.logger.warning(f"Validation failed for {indicator}: {error_message}")
+            
+            # Enregistrer le temps de calcul pour tous les indicateurs
+            if 'calculation_time' in result:
+                self.record_metric(
+                    metric_type='calculation_time',
+                    value=result['calculation_time'],
+                    endpoint=f'indicators/{indicator}'
+                )
 
     def start(self):
         """Démarre le service de monitoring"""

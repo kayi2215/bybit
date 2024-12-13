@@ -164,5 +164,122 @@ class TestAPIMonitor:
             assert monitor.consecutive_failures == 1
             assert len([m for m in monitor.metrics if m['type'] == 'availability' and m['value'] == 0]) == 1
 
+    def test_check_indicators_health(self, monitor):
+        """Test de la vérification de la santé des indicateurs"""
+        # Simuler des métriques de validation
+        monitor.record_metric(
+            metric_type='validation',
+            value=1,
+            endpoint='indicators/MACD',
+            additional_data={
+                'error_message': None,
+                'validation_timestamp': '2024-01-01T00:00:00',
+                'indicator_type': 'MACD'
+            }
+        )
+        monitor.record_metric(
+            metric_type='validation',
+            value=0,
+            endpoint='indicators/ADX',
+            additional_data={
+                'error_message': 'Invalid value',
+                'validation_timestamp': '2024-01-01T00:00:00',
+                'indicator_type': 'ADX'
+            }
+        )
+
+        health = monitor.check_indicators_health()
+        
+        assert health['status'] == 'WARNING'
+        assert 'MACD' in health['indicators']
+        assert 'ADX' in health['indicators']
+        assert health['indicators']['MACD']['status'] == 'OK'
+        assert health['indicators']['ADX']['status'] == 'WARNING'
+
+    def test_indicator_validation_rules(self, monitor):
+        """Test des règles de validation des indicateurs"""
+        rules = monitor._get_validation_rules('MACD')
+        
+        assert rules['type'] == 'dict'
+        assert 'value' in rules['required_fields']
+        assert 'signal' in rules['required_fields']
+        assert 'histogram' in rules['required_fields']
+        
+        rules = monitor._get_validation_rules('ADX')
+        assert rules['type'] == 'float'
+        assert rules['range'] == [0, 100]
+
+    def test_monitor_calculation_performance(self, monitor):
+        """Test du monitoring des performances de calcul"""
+        # Simuler des métriques de performance
+        monitor.record_metric(
+            metric_type='calculation_time',
+            value=1000,
+            endpoint='indicators/MACD'
+        )
+        monitor.record_metric(
+            metric_type='calculation_time',
+            value=6000,  # Au-dessus du seuil
+            endpoint='indicators/ADX'
+        )
+
+        performance = monitor.monitor_calculation_performance()
+        
+        assert 'indicators_performance' in performance
+        assert 'MACD' in performance['indicators_performance']
+        assert 'ADX' in performance['indicators_performance']
+        assert performance['indicators_performance']['MACD']['status'] == 'OK'
+        assert performance['indicators_performance']['ADX']['status'] == 'WARNING'
+        assert len(performance['bottlenecks']) > 0
+
+    def test_record_validation_metrics(self, monitor):
+        """Test de l'enregistrement des métriques de validation"""
+        validation_results = {
+            'MACD': {
+                'valid': True,
+                'calculation_time': 100
+            },
+            'ADX': {
+                'valid': False,
+                'error': 'Invalid value',
+                'calculation_time': 150
+            }
+        }
+
+        monitor.record_validation_metrics(validation_results)
+        
+        validation_metrics = [m for m in monitor.metrics if m['type'] == 'validation']
+        calc_metrics = [m for m in monitor.metrics if m['type'] == 'calculation_time']
+        
+        assert len(validation_metrics) == 2
+        assert len(calc_metrics) == 2
+        
+        macd_metric = next(m for m in validation_metrics if m['endpoint'] == 'indicators/MACD')
+        assert macd_metric['value'] == 1
+        assert macd_metric.get('error_message') is None
+        
+        adx_metric = next(m for m in validation_metrics if m['endpoint'] == 'indicators/ADX')
+        assert adx_metric['value'] == 0
+        assert adx_metric['error_message'] == 'Invalid value'
+
+    def test_additional_data_in_metrics(self, monitor):
+        """Test de l'ajout de données additionnelles aux métriques"""
+        additional_data = {
+            'test_key': 'test_value',
+            'timestamp': '2024-01-01T00:00:00'
+        }
+        
+        monitor.record_metric(
+            metric_type='test',
+            value=1.0,
+            endpoint='test_endpoint',
+            additional_data=additional_data
+        )
+        
+        last_metric = monitor.metrics[-1]
+        assert 'test_key' in last_metric
+        assert last_metric['test_key'] == 'test_value'
+        assert last_metric['timestamp'] == '2024-01-01T00:00:00'
+
 if __name__ == "__main__":
     pytest.main(["-v", __file__])
