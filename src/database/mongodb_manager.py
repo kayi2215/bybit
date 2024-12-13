@@ -2,7 +2,7 @@ from typing import Dict, List, Optional, Any
 from pymongo import MongoClient, ASCENDING, DESCENDING
 from pymongo.collection import Collection
 from pymongo.database import Database
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 import logging
 import os
 from dotenv import load_dotenv
@@ -94,11 +94,10 @@ class MongoDBManager:
         self.api_metrics.create_index([("timestamp", DESCENDING)])
         self.api_metrics.create_index([("endpoint", ASCENDING), ("metric_type", ASCENDING), ("timestamp", DESCENDING)])
 
-    def store_market_data(self, symbol: str, data: Dict[str, Any]):
+    def store_market_data(self, data: Dict[str, Any]):
         """
         Stocke les données de marché dans MongoDB
-        :param symbol: Symbole de la paire de trading
-        :param data: Données à stocker
+        :param data: Données à stocker contenant symbol, timestamp, et data
         """
         try:
             if not hasattr(self, 'client') or self.client is None:
@@ -111,14 +110,12 @@ class MongoDBManager:
             except Exception:
                 self.logger.error("MongoDB connection lost")
                 return
+            
+            if 'timestamp' not in data:
+                data['timestamp'] = datetime.now(timezone.utc)
                 
-            document = {
-                "symbol": symbol,
-                "timestamp": datetime.now(),
-                "data": data
-            }
-            self.market_data.insert_one(document)
-            self.logger.debug(f"Stored market data for {symbol}")
+            self.market_data.insert_one(data)
+            self.logger.debug(f"Stored market data for {data.get('symbol')}")
         except Exception as e:
             self.logger.error(f"Error storing market data: {str(e)}")
             raise
@@ -143,7 +140,7 @@ class MongoDBManager:
                 
             document = {
                 "symbol": symbol,
-                "timestamp": datetime.now(),
+                "timestamp": datetime.now(timezone.utc),
                 "indicators": indicators
             }
             self.indicators.insert_one(document)
@@ -169,7 +166,7 @@ class MongoDBManager:
                 self.logger.error("MongoDB connection lost")
                 return
                 
-            trade_data["timestamp"] = datetime.now()
+            trade_data["timestamp"] = datetime.now(timezone.utc)
             self.trades.insert_one(trade_data)
             self.logger.info(f"Stored trade for {trade_data.get('symbol')}")
         except Exception as e:
@@ -196,7 +193,7 @@ class MongoDBManager:
                 
             document = {
                 "strategy_name": strategy_name,
-                "timestamp": datetime.now(),
+                "timestamp": datetime.now(timezone.utc),
                 "result": result
             }
             self.backtest_results.insert_one(document)
@@ -261,7 +258,7 @@ class MongoDBManager:
                 
                 document = {
                     "symbol": data['symbol'],
-                    "timestamp": datetime.now(),
+                    "timestamp": datetime.now(timezone.utc),
                     "data": data['data']
                 }
                 documents.append(document)
@@ -301,7 +298,7 @@ class MongoDBManager:
                 
                 document = {
                     "symbol": indicator_data['symbol'],
-                    "timestamp": datetime.now(),
+                    "timestamp": datetime.now(timezone.utc),
                     "indicators": indicator_data['indicators']
                 }
                 documents.append(document)
@@ -336,7 +333,7 @@ class MongoDBManager:
                 "endpoint": endpoint,
                 "metric_type": metric_type,
                 "value": value,
-                "timestamp": datetime.now()
+                "timestamp": datetime.now(timezone.utc)
             }
             self.api_metrics.insert_one(document)
             self.logger.debug(f"Stored API metric for {endpoint}: {metric_type}")
@@ -367,7 +364,7 @@ class MongoDBManager:
                 "endpoint": endpoint,
                 "event_type": event_type,
                 "details": details,
-                "timestamp": datetime.now()
+                "timestamp": datetime.now(timezone.utc)
             }
             self.monitoring.insert_one(document)
             self.logger.debug(f"Stored monitoring event for {endpoint}")
@@ -455,7 +452,7 @@ class MongoDBManager:
                 return []
             
             if end_time is None:
-                end_time = datetime.now()
+                end_time = datetime.now(timezone.utc)
             
             cursor = self.trades.find({
                 "timestamp": {
@@ -486,7 +483,7 @@ class MongoDBManager:
                 self.logger.error("MongoDB connection lost")
                 return
                 
-            data["timestamp"] = datetime.now()
+            data["timestamp"] = datetime.now(timezone.utc)
             self.monitoring.insert_one(data)
             self.logger.debug("Stored monitoring data")
         except Exception as e:
@@ -513,7 +510,7 @@ class MongoDBManager:
                 return []
             
             if end_time is None:
-                end_time = datetime.now()
+                end_time = datetime.now(timezone.utc)
             
             cursor = self.monitoring.find({
                 "timestamp": {
@@ -544,7 +541,7 @@ class MongoDBManager:
                 self.logger.error("MongoDB connection lost")
                 return
                 
-            metric_data["timestamp"] = datetime.now()
+            metric_data["timestamp"] = datetime.now(timezone.utc)
             self.api_metrics.insert_one(metric_data)
             self.logger.debug(f"Stored API metric for {metric_data.get('endpoint')}")
         except Exception as e:
@@ -711,7 +708,7 @@ class MongoDBManager:
                 self.logger.error("MongoDB connection lost")
                 return
             
-            cutoff_date = datetime.now() - timedelta(days=days_to_keep)
+            cutoff_date = datetime.now(timezone.utc) - timedelta(days=days_to_keep)
             
             # Nettoyer les données de marché
             result = self.market_data.delete_many({"timestamp": {"$lt": cutoff_date}})

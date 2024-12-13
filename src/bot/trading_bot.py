@@ -1,5 +1,7 @@
 import threading
 import time
+import os
+import fcntl
 from typing import Optional
 from src.data_collector.market_data import MarketDataCollector
 from src.monitoring.api_monitor import APIMonitor
@@ -9,9 +11,44 @@ from src.database.mongodb_manager import MongoDBManager
 from config.config import BYBIT_API_KEY, BYBIT_API_SECRET
 import logging
 from datetime import datetime
+import pytz as tz
+import atexit
 
 class TradingBot:
+    _instance = None
+    _lock_file = "/tmp/trading_bot.lock"
+    _lock_fd = None
+    
+    def __new__(cls, *args, **kwargs):
+        if not cls._instance:
+            cls._instance = super(TradingBot, cls).__new__(cls)
+            cls._instance._initialized = False
+        return cls._instance
+
     def __init__(self, symbols=None, db=None):
+        if hasattr(self, '_initialized') and self._initialized:
+            return
+            
+        # Vérifier le fichier de verrouillage
+        try:
+            # Ouvrir le fichier en mode écriture
+            self._lock_fd = open(self._lock_file, 'w')
+            
+            # Tenter d'acquérir le verrou
+            fcntl.flock(self._lock_fd.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            
+            # Écrire le PID dans le fichier
+            self._lock_fd.write(str(os.getpid()))
+            self._lock_fd.flush()
+            
+        except (IOError, OSError):
+            if hasattr(self, '_lock_fd') and self._lock_fd:
+                self._lock_fd.close()
+            raise RuntimeError("Une autre instance du bot est déjà en cours d'exécution")
+        
+        # Enregistrer la fonction de nettoyage
+        atexit.register(self._cleanup)
+        
         # Configuration du logging
         self.setup_logging()
         
@@ -42,27 +79,114 @@ class TradingBot:
         self.trading_thread: Optional[threading.Thread] = None
         
         self.logger.info("Bot de trading initialisé")
+        self._initialized = True
+
+    def _cleanup(self):
+        """Nettoie les ressources lors de la fermeture"""
+        if hasattr(self, '_lock_fd') and self._lock_fd:
+            try:
+                # Vérifier si le fichier est toujours ouvert avant de tenter de le déverrouiller
+                if not self._lock_fd.closed:
+                    fcntl.flock(self._lock_fd.fileno(), fcntl.LOCK_UN)
+                    self._lock_fd.close()
+                
+                # Supprimer le fichier de verrouillage s'il existe encore
+                if os.path.exists(self._lock_file):
+                    os.remove(self._lock_file)
+            except (IOError, OSError, ValueError):
+                pass
+            finally:
+                self._lock_fd = None
+        
+        if hasattr(self, 'db') and self.db:
+            try:
+                self.db.client.close()
+            except:
+                pass
+
+    def __del__(self):
+        """Destructeur de la classe"""
+        try:
+            self._cleanup()
+        except:
+            pass
 
     def setup_logging(self):
         """Configure le système de logging pour le bot"""
         self.logger = logging.getLogger('trading_bot')
-        self.logger.setLevel(logging.INFO)
         
-        # Handler pour le fichier
-        fh = logging.FileHandler('logs/trading_bot.log')
-        fh.setLevel(logging.INFO)
+        # Éviter la duplication des handlers
+        if not self.logger.handlers:
+            self.logger.setLevel(logging.INFO)
+            
+            # Créer le dossier logs s'il n'existe pas
+            os.makedirs('logs', exist_ok=True)
+            
+            # Handler pour le fichier
+            fh = logging.FileHandler('logs/trading_bot.log')
+            fh.setLevel(logging.INFO)
+            
+            # Handler pour la console
+            ch = logging.StreamHandler()
+            ch.setLevel(logging.INFO)
+            
+            # Format
+            formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+            fh.setFormatter(formatter)
+            ch.setFormatter(formatter)
+            
+            self.logger.addHandler(fh)
+            self.logger.addHandler(ch)
+
+    def log_trading_decision(self, symbol: str, decision: str, indicators: dict):
+        """Log détaillé des décisions de trading avec leur justification"""
         
-        # Handler pour la console
-        ch = logging.StreamHandler()
-        ch.setLevel(logging.INFO)
+        # Vérifier si les indicateurs sont dans le nouveau format ou l'ancien format
+        if 'indicators' in indicators:
+            # Ancien format
+            ind = indicators['indicators']
+            current_price = indicators.get('current_price')
+        else:
+            # Nouveau format
+            ind = indicators
+            current_price = None
         
-        # Format
-        formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
-        fh.setFormatter(formatter)
-        ch.setFormatter(formatter)
+        # Extraire les indicateurs
+        rsi = ind.get('RSI')
+        macd = ind.get('MACD')
+        macd_signal = ind.get('Signal') or ind.get('MACD_Signal')
+        bb_upper = ind.get('BB_Upper')
+        bb_lower = ind.get('BB_Lower')
         
-        self.logger.addHandler(fh)
-        self.logger.addHandler(ch)
+        # Construire le message de log
+        message = f"\nDécision de Trading pour {symbol}:\n"
+        message += f"{'='*50}\n"
+        
+        if current_price:
+            message += f"Prix actuel: {current_price:.2f}\n"
+        
+        # Ajouter les indicateurs disponibles
+        if rsi is not None:
+            message += f"RSI: {rsi:.2f}"
+            if rsi > 70:
+                message += " (zone de surachat)"
+            elif rsi < 30:
+                message += " (zone de survente)"
+            message += "\n"
+            
+        if macd is not None:
+            message += f"MACD: {macd:.2f}\n"
+        if macd_signal is not None:
+            message += f"Signal MACD: {macd_signal:.2f}\n"
+            
+        if bb_upper is not None and bb_lower is not None:
+            message += f"Bandes de Bollinger: {bb_lower:.2f} - {bb_upper:.2f}\n"
+            
+        message += f"\nDécision Finale: {decision}\n"
+        message += "="*50
+        
+        # Logger le message
+        self.logger.info(message)
 
     def start_monitoring(self):
         """Démarre le service de monitoring dans un thread séparé"""
@@ -105,7 +229,19 @@ class TradingBot:
                                     self.logger.info(f"Prix récupéré directement de l'API pour {symbol}: {price}")
                                     # Stocker les données dans MongoDB pour les prochaines fois
                                     try:
-                                        self.db.store_market_data(symbol, current_data)
+                                        # Convert Unix timestamp to timezone-aware datetime if needed
+                                        timestamp = current_data.get('timestamp')
+                                        if isinstance(timestamp, (int, float)):
+                                            timestamp = datetime.fromtimestamp(timestamp, tz=tz.UTC)
+                                        else:
+                                            timestamp = datetime.now(tz=tz.UTC)
+                                            
+                                        market_data = {
+                                            'symbol': symbol,
+                                            'data': current_data,
+                                            'timestamp': timestamp
+                                        }
+                                        self.db.store_market_data(market_data)
                                         self.logger.info(f"Données stockées en base pour {symbol}")
                                     except Exception as db_error:
                                         self.logger.error(f"Erreur lors du stockage des données pour {symbol}: {str(db_error)}")

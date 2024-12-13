@@ -93,13 +93,15 @@ class TestMarketUpdater(unittest.TestCase):
         
         # Vérification de la sauvegarde des données
         self.mock_db.store_market_data.assert_called_once()
-        saved_data = self.mock_db.store_market_data.call_args.kwargs['data']
+        saved_data = self.mock_db.store_market_data.call_args[0][0]  # Accéder au premier argument positif
         self.assertEqual(saved_data['symbol'], symbol)
         self.assertIn('timestamp', saved_data)
-        self.assertIn('ticker', saved_data)
-        self.assertIn('klines', saved_data)
-        self.assertIn('orderbook', saved_data)
-        self.assertIn('trades', saved_data)
+        self.assertIn('data', saved_data)
+        self.assertIn('ticker', saved_data['data'])
+        self.assertIn('klines', saved_data['data'])
+        self.assertIn('orderbook', saved_data['data'])
+        self.assertIn('trades', saved_data['data'])
+        self.assertEqual(saved_data['data']['exchange'], 'bybit')
 
     def test_update_market_data_failure(self):
         """Test de la gestion des erreurs lors de la mise à jour"""

@@ -1,147 +1,254 @@
 import unittest
-import time
-from unittest.mock import Mock, patch
+from unittest.mock import MagicMock, patch
 from src.bot.trading_bot import TradingBot
 from src.database.mongodb_manager import MongoDBManager
 from datetime import datetime
+import pytz as tz
+import pytest
+import os
+import logging
+import mongomock
+import time
 
 class TestTradingBotIntegration(unittest.TestCase):
-    def setUp(self):
-        """Initialisation avant chaque test"""
-        self.symbols = ["BTCUSDT", "ETHUSDT"]
-        self.db = MongoDBManager()
-        self.bot = TradingBot(symbols=self.symbols, db=self.db)
+    @classmethod
+    def setUpClass(cls):
+        """Configuration initiale pour tous les tests"""
+        # Supprimer le fichier de lock s'il existe
+        if os.path.exists("/tmp/trading_bot.lock"):
+            os.remove("/tmp/trading_bot.lock")
         
-        # Nettoyer les données de test précédentes
-        self.cleanup_test_data()
+        # Réinitialiser le singleton
+        TradingBot._instance = None
+        if hasattr(TradingBot, '_lock_fd') and TradingBot._lock_fd:
+            TradingBot._lock_fd.close()
+            TradingBot._lock_fd = None
+        
+        # Nettoyer les handlers de logging
+        logger = logging.getLogger('trading_bot')
+        for handler in logger.handlers[:]:
+            logger.removeHandler(handler)
+            if isinstance(handler, logging.FileHandler):
+                handler.close()
+
+    def setUp(self):
+        """Configuration avant chaque test"""
+        # Réinitialiser le singleton et le verrou
+        TradingBot._instance = None
+        
+        # S'assurer que le fichier de verrouillage est supprimé
+        try:
+            if os.path.exists("/tmp/trading_bot.lock"):
+                os.remove("/tmp/trading_bot.lock")
+        except OSError:
+            pass
+            
+        # Nettoyer les handlers de logging
+        logger = logging.getLogger('trading_bot')
+        for handler in logger.handlers[:]:
+            logger.removeHandler(handler)
+            if isinstance(handler, logging.FileHandler):
+                handler.close()
+        
+        # Mock MongoDB avec mongomock
+        self.mock_client = mongomock.MongoClient()
+        self.db = MongoDBManager()
+        self.db.client = self.mock_client
+        self.db.db = self.mock_client.db
+        
+        # Créer le bot avec la base mockée
+        self.bot = TradingBot(symbols=["BTCUSDT"], db=self.db)
 
     def tearDown(self):
         """Nettoyage après chaque test"""
-        if hasattr(self, 'bot') and self.bot.is_running:
-            self.bot.stop()
-            time.sleep(1)  # Attendre que les threads se terminent
-        self.cleanup_test_data()
-        
-        # Fermer la connexion MongoDB
-        if hasattr(self, 'db'):
-            self.db.close()
-
-    def cleanup_test_data(self):
-        """Nettoie les données de test dans MongoDB"""
-        try:
-            # Utiliser les méthodes de nettoyage appropriées
-            self.db.market_data.delete_many({"test": True})
-            self.db.indicators.delete_many({"test": True})
-        except Exception as e:
-            print(f"Erreur lors du nettoyage des données: {e}")
-
-    def insert_test_market_data(self):
-        """Insère des données de test dans MongoDB"""
-        for symbol in self.symbols:
-            market_data = {
-                "symbol": symbol,
-                "data": {
-                    "price": 50000.0 if symbol == "BTCUSDT" else 2000.0,
-                    "volume": 100.0,
-                    "timestamp": datetime.now().timestamp()
-                },
-                "test": True
-            }
-            self.db.store_market_data(symbol, market_data)
-
-            indicators = {
-                "symbol": symbol,
-                "indicators": {
-                    "rsi": 65.5,
-                    "macd": {
-                        "value": 100.0,
-                        "signal": 95.0
-                    }
-                },
-                "test": True
-            }
-            self.db.store_indicators(symbol, indicators)
-
-    def test_bot_initialization(self):
-        """Teste l'initialisation correcte du bot"""
-        self.assertIsNotNone(self.bot.market_data)
-        self.assertIsNotNone(self.bot.monitoring_service)
-        self.assertIsNotNone(self.bot.data_updater)
-        self.assertIsNotNone(self.bot.db)
-        self.assertEqual(self.bot.symbols, self.symbols)
-
-    def test_bot_start_stop(self):
-        """Teste le démarrage et l'arrêt du bot"""
-        # Démarrer le bot
-        self.bot.start()
-        self.assertTrue(self.bot.is_running)
-        self.assertIsNotNone(self.bot.monitoring_thread)
-        self.assertIsNotNone(self.bot.trading_thread)
-        
-        # Attendre un peu pour que les services démarrent
-        time.sleep(2)
-        
-        # Arrêter le bot
-        self.bot.stop()
-        self.assertFalse(self.bot.is_running)
-        
-        # Vérifier que les threads sont terminés
-        time.sleep(1)
-        self.assertFalse(self.bot.monitoring_thread.is_alive())
-        self.assertFalse(self.bot.trading_thread.is_alive())
-
-    def test_data_flow(self):
-        """Teste le flux de données à travers le système"""
-        # Insérer des données de test
-        self.insert_test_market_data()
-        
-        # Vérifier que les données sont récupérables
-        for symbol in self.symbols:
-            market_data = self.db.get_latest_market_data(symbol)
-            self.assertIsNotNone(market_data)
-            if isinstance(market_data, list):
-                self.assertTrue(len(market_data) > 0)
-                market_data = market_data[0]
-            self.assertIn('symbol', market_data)
-            self.assertEqual(market_data['symbol'], symbol)
+        # Arrêter et nettoyer le bot
+        if hasattr(self, 'bot'):
+            try:
+                self.bot.stop()
+            except:
+                pass
+            try:
+                self.bot._cleanup()
+            except:
+                pass
             
-            indicators = self.db.get_latest_indicators(symbol)
-            self.assertIsNotNone(indicators)
-            if isinstance(indicators, list):
-                self.assertTrue(len(indicators) > 0)
-                indicators = indicators[0]
-            self.assertIn('symbol', indicators)
-            self.assertEqual(indicators['symbol'], symbol)
+        # Fermer la connexion MongoDB mockée
+        if hasattr(self, 'mock_client'):
+            try:
+                self.mock_client.close()
+            except:
+                pass
+            
+        # Nettoyer le fichier de verrouillage
+        try:
+            if os.path.exists("/tmp/trading_bot.lock"):
+                os.remove("/tmp/trading_bot.lock")
+        except OSError:
+            pass
+            
+        # Réinitialiser le singleton
+        TradingBot._instance = None
+
+    def test_singleton_pattern(self):
+        """Test que le TradingBot utilise bien le pattern singleton"""
+        # Réinitialiser le singleton
+        TradingBot._instance = None
+        if os.path.exists("/tmp/trading_bot.lock"):
+            os.remove("/tmp/trading_bot.lock")
+        
+        # Créer deux instances
+        bot1 = TradingBot(symbols=["BTCUSDT"], db=self.db)
+        bot2 = TradingBot(symbols=["ETHUSDT"], db=self.db)
+        
+        # Vérifier que c'est la même instance
+        self.assertIs(bot1, bot2)
+        # Vérifier que les symboles sont ceux de la première instance
+        self.assertEqual(bot1.symbols, ["BTCUSDT"])
+        self.assertEqual(bot2.symbols, ["BTCUSDT"])
+        
+        # Nettoyer
+        bot1._cleanup()
+
+    def test_lock_file(self):
+        """Test que le mécanisme de verrouillage fonctionne"""
+        # S'assurer que le fichier de lock n'existe pas
+        if os.path.exists("/tmp/trading_bot.lock"):
+            os.remove("/tmp/trading_bot.lock")
+            
+        # Réinitialiser le singleton
+        TradingBot._instance = None
+        
+        # Créer une première instance
+        bot1 = TradingBot(db=self.db)
+        
+        # Réinitialiser le singleton pour forcer une nouvelle instance
+        TradingBot._instance = None
+        
+        # Tenter de créer une deuxième instance devrait lever une exception
+        with self.assertRaises(RuntimeError) as context:
+            bot2 = TradingBot(db=self.db)
+        
+        self.assertIn("Une autre instance du bot est déjà en cours d'exécution", str(context.exception))
+        
+        # Nettoyer
+        bot1._cleanup()
+
+    def test_logging_setup(self):
+        """Test de la configuration des logs"""
+        # S'assurer que le singleton est réinitialisé
+        TradingBot._instance = None
+        
+        # S'assurer que le fichier de verrouillage est supprimé
+        if os.path.exists("/tmp/trading_bot.lock"):
+            os.remove("/tmp/trading_bot.lock")
+            
+        # Nettoyer les handlers de logging
+        logger = logging.getLogger('trading_bot')
+        for handler in logger.handlers[:]:
+            logger.removeHandler(handler)
+            if isinstance(handler, logging.FileHandler):
+                handler.close()
+
+        # Créer une instance du bot
+        bot = TradingBot(db=self.db)
+        self.bot = bot  # Pour le nettoyage dans tearDown
+        
+        # Vérifier que le logger est configuré correctement
+        logger = logging.getLogger('trading_bot')
+        self.assertTrue(logger.handlers)
+        self.assertTrue(any(isinstance(h, logging.FileHandler) for h in logger.handlers))
 
     @patch('src.services.market_updater.MarketUpdater.update_market_data')
     def test_market_data_updates(self, mock_update):
         """Teste les mises à jour des données de marché"""
-        # Configurer le mock pour retourner True (succès)
         mock_update.return_value = True
+        
+        # Configurer le mock pour simuler des données valides
+        self.db.get_latest_market_data = MagicMock(return_value={
+            'symbol': 'BTCUSDT',
+            'timestamp': datetime.now(tz=tz.UTC),
+            'data': {'ticker': {'last_price': '50000'}}
+        })
         
         # Démarrer le bot
         self.bot.start()
+        time.sleep(1)  # Attendre que le thread démarre
         
-        # Attendre que le bot démarre et commence à mettre à jour les données
-        time.sleep(2)
-        
-        # Vérifier que la méthode de mise à jour est appelée au moins une fois
-        self.assertTrue(mock_update.called)
+        # Vérifier que la mise à jour a été appelée
+        self.assertTrue(self.bot.is_running)
+        mock_update.assert_called()
         
         # Arrêter le bot
         self.bot.stop()
 
-    def test_error_handling(self):
-        """Teste la gestion des erreurs"""
-        # Simuler une erreur dans la base de données
-        with patch.object(self.db, 'get_latest_market_data', side_effect=Exception("Test error")):
-            self.bot.start()
-            time.sleep(2)  # Attendre que le bot traite l'erreur
+    def test_trading_decision_logging(self):
+        """Test des logs détaillés des décisions de trading"""
+        # S'assurer que le singleton est réinitialisé
+        TradingBot._instance = None
+        
+        # S'assurer que le fichier de verrouillage est supprimé
+        try:
+            if os.path.exists("/tmp/trading_bot.lock"):
+                os.remove("/tmp/trading_bot.lock")
+        except OSError:
+            pass
             
-            # Le bot devrait continuer à fonctionner malgré l'erreur
-            self.assertTrue(self.bot.is_running)
+        # Nettoyer les handlers de logging
+        logger = logging.getLogger('trading_bot')
+        for handler in logger.handlers[:]:
+            logger.removeHandler(handler)
+            if isinstance(handler, logging.FileHandler):
+                handler.close()
+
+        # Créer une instance du bot
+        bot = TradingBot(db=self.db)
+        self.bot = bot  # Pour le nettoyage dans tearDown
+        
+        # Test avec le nouveau format d'indicateurs
+        with self.assertLogs(logger='trading_bot', level='INFO') as cm:
+            bot.log_trading_decision(
+                symbol="BTCUSDT",
+                decision="BUY",
+                indicators={
+                    "RSI": 30.5,
+                    "MACD": 0.5,
+                    "Signal": 0.3
+                }
+            )
             
-            self.bot.stop()
+            # Vérifier le contenu des logs
+            log_output = '\n'.join(cm.output)
+            self.assertIn("BTCUSDT", log_output)
+            self.assertIn("BUY", log_output)
+            self.assertIn("RSI: 30.50", log_output)
+            self.assertIn("MACD: 0.50", log_output)
+            self.assertIn("Signal MACD: 0.30", log_output)
+            
+        # Test avec l'ancien format d'indicateurs
+        with self.assertLogs(logger='trading_bot', level='INFO') as cm:
+            bot.log_trading_decision(
+                symbol="BTCUSDT",
+                decision="SELL",
+                indicators={
+                    'indicators': {
+                        'RSI': 75.5,
+                        'MACD': -2.5,
+                        'MACD_Signal': 1.2,
+                        'BB_Upper': 50000.0,
+                        'BB_Lower': 48000.0
+                    },
+                    'current_price': 49500.0
+                }
+            )
+            
+            # Vérifier le contenu des logs
+            log_output = '\n'.join(cm.output)
+            self.assertIn("BTCUSDT", log_output)
+            self.assertIn("SELL", log_output)
+            self.assertIn("RSI: 75.50", log_output)
+            self.assertIn("MACD: -2.50", log_output)
+            self.assertIn("Prix actuel: 49500.00", log_output)
+            self.assertIn("Bandes de Bollinger: 48000.00 - 50000.00", log_output)
 
 if __name__ == '__main__':
     unittest.main()

@@ -109,15 +109,17 @@ class MarketUpdater:
             market_data = {
                 'symbol': symbol,
                 'timestamp': datetime.now(),
-                'ticker': ticker_data,
-                'klines': klines_data.to_dict('records') if isinstance(klines_data, pd.DataFrame) else klines_data,
-                'orderbook': orderbook_data,
-                'trades': trades_data,
-                'exchange': 'bybit'
+                'data': {
+                    'ticker': ticker_data,
+                    'klines': klines_data.to_dict('records') if isinstance(klines_data, pd.DataFrame) else klines_data,
+                    'orderbook': orderbook_data,
+                    'trades': trades_data,
+                    'exchange': 'bybit'
+                }
             }
 
             # Sauvegarde des données de marché
-            self.db.store_market_data(symbol=symbol, data=market_data)
+            self.db.store_market_data(market_data)
 
             # Sauvegarde des indicateurs techniques s'ils sont disponibles
             if technical_data and not self.stop_event.is_set():

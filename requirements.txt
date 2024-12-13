@@ -12,3 +12,5 @@ pathlib>=1.0.1
 # MongoDB dependencies
 pymongo>=4.6.1
 dnspython>=2.4.2
+mongomock==4.1.2
+pytest==7.4.3
