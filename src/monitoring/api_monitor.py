@@ -84,13 +84,13 @@ class APIMonitor:
             return False
         return response.get('retCode') == 0
 
-    def measure_latency(self, endpoint: str, method: str = "GET", **kwargs) -> Optional[float]:
+    def measure_latency(self, endpoint: str, method: str = "GET", timeout: int = 5, **kwargs) -> Optional[float]:
         """Mesure la latence d'un appel API Bybit"""
         try:
             start_time = time.time()
             
             if not self.client:
-                response = requests.get(f"{self.base_url}{endpoint}")
+                response = requests.get(f"{self.base_url}{endpoint}", timeout=timeout)
             else:
                 method_map = {
                     "get_ticker": self.client.get_tickers,
@@ -99,55 +99,73 @@ class APIMonitor:
                 }
                 
                 if method not in method_map:
-                    raise ValueError(f"Unsupported method: {method}")
+                    self.logger.error(f"Méthode non supportée: {method}")
+                    return None
+
+                # Create a threading Event for timeout
+                timeout_event = threading.Event()
+                response = None
+                error = None
+
+                def api_call():
+                    nonlocal response, error
+                    try:
+                        response = method_map[method](**kwargs)
+                    except Exception as e:
+                        error = e
+
+                # Start API call in a separate thread
+                thread = threading.Thread(target=api_call)
+                thread.daemon = True
+                thread.start()
                 
-                response = method_map[method](**kwargs)
+                # Wait for either completion or timeout
+                thread.join(timeout=timeout)
+                
+                if thread.is_alive():
+                    self.logger.error(f"Timeout lors de l'appel à {endpoint}")
+                    return None
+                
+                if error is not None:
+                    raise error
+                
+                if response is None:
+                    return None
             
             end_time = time.time()
-            latency = (end_time - start_time) * 1000  # Convertir en millisecondes
+            latency = (end_time - start_time) * 1000  # Convert to milliseconds
             
-            if self.is_valid_response(response):
-                self.record_metric('latency', latency, endpoint)
+            if isinstance(response, requests.Response):
+                is_valid = response.status_code == 200
+            else:
+                is_valid = self.is_valid_response(response)
+            
+            if is_valid:
                 self.consecutive_failures = 0
                 return latency
             else:
                 self.consecutive_failures += 1
-                self.record_metric('error', 1, endpoint)
-                self.logger.warning(f"API call failed: {response}")
                 return None
                 
-        except Exception as e:
+        except requests.Timeout:
+            self.logger.error(f"Timeout lors de l'appel à {endpoint}")
             self.consecutive_failures += 1
-            self.record_metric('error', 1, endpoint)
-            self.logger.error(f"Error measuring latency: {str(e)}")
+            return None
+        except Exception as e:
+            self.logger.error(f"Erreur lors de la mesure de latence pour {endpoint}: {str(e)}")
+            self.consecutive_failures += 1
             return None
 
-    def check_availability(self, endpoint: str = "/v5/market/tickers") -> bool:
+    def check_availability(self, endpoint: str = "/v5/market/tickers", timeout: int = 5) -> bool:
         """Vérifie si l'API Bybit est disponible"""
         try:
-            if not self.client:
-                response = requests.get(f"{self.base_url}{endpoint}", params={"category": "spot", "symbol": "BTCUSDT"})
-                success = response.status_code == 200 and self.is_valid_response(response.json())
-            else:
-                response = self.client.get_tickers(
-                    category="spot",
-                    symbol="BTCUSDT"
-                )
-                success = self.is_valid_response(response)
-            
-            if success:
-                self.consecutive_failures = 0
-                self.record_metric('availability', 1, endpoint)
-                return True
-            else:
-                self.consecutive_failures += 1
-                self.record_metric('availability', 0, endpoint)
-                return False
-                
+            response = requests.get(f"{self.base_url}{endpoint}", timeout=timeout)
+            return response.status_code == 200
+        except requests.Timeout:
+            self.logger.error("Timeout lors de la vérification de disponibilité")
+            return False
         except Exception as e:
-            self.consecutive_failures += 1
-            self.record_metric('availability', 0, endpoint)
-            self.logger.error(f"Error checking availability: {str(e)}")
+            self.logger.error(f"Erreur lors de la vérification de disponibilité: {str(e)}")
             return False
 
     def check_rate_limits(self) -> Dict:
@@ -219,7 +237,9 @@ class APIMonitor:
                 self.logger.warning(f"High error rate detected: {error_rate:.2%}")
         
         elif metric['type'] == 'validation':
-            validation_metrics = [m for m in self.metrics if m['type'] == 'validation']
+            validation_metrics = [m for m in self.metrics 
+                                if m['type'] == 'validation' 
+                                and m['endpoint'] == f'indicators/{metric["endpoint"]}']
             if validation_metrics:
                 error_rate = sum(1 for m in validation_metrics if m['value'] == 0) / len(validation_metrics)
                 if error_rate > self.alert_thresholds['validation_error_threshold']:
@@ -334,7 +354,7 @@ class APIMonitor:
         
         return health_status
 
-    def check_indicators_health(self) -> Dict:
+    def check_indicators_health(self, timeout: int = 5) -> Dict:
         """Vérifie la santé des indicateurs avancés"""
         indicators_health = {
             'status': 'OK',
@@ -343,11 +363,58 @@ class APIMonitor:
         }
         
         for indicator in ['MACD', 'ADX', 'ATR', 'SuperTrend']:
-            indicator_status = self._check_indicator_validity(indicator)
-            indicators_health['indicators'][indicator] = indicator_status
-            
-            # Mettre à jour le statut global si nécessaire
-            if indicator_status['status'] != 'OK':
+            try:
+                # Create a threading Event for timeout
+                result = None
+                error = None
+                
+                def check_indicator():
+                    nonlocal result, error
+                    try:
+                        result = self._check_indicator_validity(indicator)
+                    except Exception as e:
+                        error = e
+                
+                # Start indicator check in a separate thread
+                thread = threading.Thread(target=check_indicator)
+                thread.daemon = True
+                thread.start()
+                
+                # Wait for either completion or timeout
+                thread.join(timeout=timeout)
+                
+                if thread.is_alive():
+                    self.logger.warning(f"Timeout checking indicator {indicator}")
+                    indicators_health['indicators'][indicator] = {
+                        'status': 'ERROR',
+                        'error': 'Timeout'
+                    }
+                    indicators_health['status'] = 'WARNING'
+                    continue
+                
+                if error is not None:
+                    raise error
+                
+                if result is None:
+                    indicators_health['indicators'][indicator] = {
+                        'status': 'ERROR',
+                        'error': 'No result'
+                    }
+                    indicators_health['status'] = 'WARNING'
+                    continue
+                
+                indicators_health['indicators'][indicator] = result
+                
+                # Mettre à jour le statut global si nécessaire
+                if result['status'] != 'OK':
+                    indicators_health['status'] = 'WARNING'
+                    
+            except Exception as e:
+                self.logger.error(f"Erreur lors de la vérification de l'indicateur {indicator}: {str(e)}")
+                indicators_health['indicators'][indicator] = {
+                    'status': 'ERROR',
+                    'error': str(e)
+                }
                 indicators_health['status'] = 'WARNING'
         
         return indicators_health
